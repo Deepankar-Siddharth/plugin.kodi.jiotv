@@ -135,16 +135,12 @@ jobs:
 
           ADDON_ZIP="repo/${ADDON_ID}/${ADDON_ID}-${VERSION}.zip"
           REPOSITORY_ZIP="repo/${REPOSITORY_ID}/${REPOSITORY_ID}-${VERSION}.zip"
-          REPOSITORY_ROOT_ZIP="repo/${REPOSITORY_ID}-${VERSION}.zip"
 
           echo "Expected addon ZIP:"
           echo "$ADDON_ZIP"
           echo "Expected repository ZIP:"
           echo "$REPOSITORY_ZIP"
-          echo "Expected repository ZIP copy:"
-          echo "$REPOSITORY_ROOT_ZIP"
-
-          for artifact in "$ADDON_ZIP" "$REPOSITORY_ZIP" "$REPOSITORY_ROOT_ZIP" "repo/addons.xml" "repo/addons.xml.md5"; do
+          for artifact in "$ADDON_ZIP" "$REPOSITORY_ZIP" "repo/addons.xml" "repo/addons.xml.md5"; do
             if ! test -f "$artifact"; then
               echo "[FAIL] Missing release artifact: ${artifact}" >&2
               exit 1
@@ -182,8 +178,7 @@ jobs:
           set -euo pipefail
           ADDON_ZIP="repo/${ADDON_ID}/${ADDON_ID}-${VERSION}.zip"
           REPOSITORY_ZIP="repo/${REPOSITORY_ID}/${REPOSITORY_ID}-${VERSION}.zip"
-          REPOSITORY_ROOT_ZIP="repo/${REPOSITORY_ID}-${VERSION}.zip"
-          for artifact in "$ADDON_ZIP" "$REPOSITORY_ZIP" "$REPOSITORY_ROOT_ZIP" "repo/addons.xml" "repo/addons.xml.md5"; do
+          for artifact in "$ADDON_ZIP" "$REPOSITORY_ZIP" "repo/addons.xml" "repo/addons.xml.md5"; do
             if ! test -f "$artifact"; then
               echo "[FAIL] Missing release artifact: ${artifact}" >&2
               exit 1

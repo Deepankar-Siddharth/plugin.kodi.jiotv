@@ -255,10 +255,6 @@ def generate_release(repository_id, output_dir, version=None):
 
     _write_zip(addon_source, addon_zip)
     _write_zip(repository_source, repository_zip)
-    root_repository_zip = os.path.join(
-        output_dir, "{0}-{1}.zip".format(repository_id, resolved_version)
-    )
-    shutil.copy2(repository_zip, root_repository_zip)
     _copy_release_assets(output_dir, repository_id)
     print(
         "[PASS] Release version resolved from addon metadata: {0}".format(
@@ -267,7 +263,6 @@ def generate_release(repository_id, output_dir, version=None):
     )
     print("[PASS] Addon ZIP generated: {0}".format(addon_zip))
     print("[PASS] Repository ZIP generated: {0}".format(repository_zip))
-    print("[PASS] Repository ZIP copy generated: {0}".format(root_repository_zip))
 
     addons_path, md5_path, digest = _write_addons_xml(
         main_root, repository_root, output_dir
@@ -277,7 +272,6 @@ def generate_release(repository_id, output_dir, version=None):
         "repository_id": repository_id,
         "addon_zip": addon_zip,
         "repository_zip": repository_zip,
-        "repository_root_zip": root_repository_zip,
         "addons_xml": addons_path,
         "addons_xml_md5": md5_path,
         "md5": digest,
