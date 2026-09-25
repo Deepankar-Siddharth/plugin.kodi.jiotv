@@ -65,8 +65,8 @@ jobs:
           PAGES_PATH: ${{ steps.release.outputs.pages_path }}
         run: |
           set -euo pipefail
-          rm -rf temp temp_repo repo
-          mkdir -p "temp/${ADDON_ID}" "temp_repo/${REPOSITORY_ID}" "repo/${ADDON_ID}" "repo/${REPOSITORY_ID}"
+          rm -rf temp temp_repo
+          mkdir -p "temp/${ADDON_ID}" "temp_repo/${REPOSITORY_ID}"
 
           # Copy visible source and then remove development/build-only material.
           cp -a addon/. "temp/${ADDON_ID}/"
@@ -112,27 +112,53 @@ jobs:
           REPOSITORY_ID: ${{ steps.release.outputs.repository_id }}
         run: |
           set -euo pipefail
-          (cd temp && zip -q -r "../repo/${ADDON_ID}/${ADDON_ID}-${VERSION}.zip" "${ADDON_ID}")
-          (cd temp_repo && zip -q -r "../repo/${REPOSITORY_ID}/${REPOSITORY_ID}-${VERSION}.zip" "${REPOSITORY_ID}")
-          cp "repo/${REPOSITORY_ID}/${REPOSITORY_ID}-${VERSION}.zip" "repo/${REPOSITORY_ID}-${VERSION}.zip"
-
-          mkdir -p "repo/${ADDON_ID}/resources" "repo/${REPOSITORY_ID}/resources"
-          cp addon/resources/icon.png "repo/${ADDON_ID}/resources/icon.png"
-          cp addon/resources/icon.png "repo/${ADDON_ID}/icon.png"
-          if [[ -f addon/resources/fanart.png ]]; then
-            cp addon/resources/fanart.png "repo/${ADDON_ID}/resources/fanart.png"
-            cp addon/resources/fanart.png "repo/${ADDON_ID}/fanart.png"
-          fi
-          cp "temp_repo/${REPOSITORY_ID}/icon.png" "repo/${REPOSITORY_ID}/resources/icon.png"
-          cp "temp_repo/${REPOSITORY_ID}/fanart.png" "repo/${REPOSITORY_ID}/resources/fanart.png"
-          cp "temp_repo/${REPOSITORY_ID}/icon.png" "repo/${REPOSITORY_ID}/icon.png"
-          cp "temp_repo/${REPOSITORY_ID}/fanart.png" "repo/${REPOSITORY_ID}/fanart.png"
-
           python3 addon/scripts/generate_repo.py \
             "$REPOSITORY_ID" \
             --version "$VERSION" \
             --output-dir repo
 
+      - name: Verify generated release artifacts
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          REPOSITORY_ID: ${{ steps.release.outputs.repository_id }}
+          TAG: ${{ steps.release.outputs.tag }}
+          CHANNEL: ${{ steps.release.outputs.channel }}
+        run: |
+          set -euo pipefail
+          echo "=== RELEASE VARIABLES ==="
+          echo "VERSION=${VERSION}"
+          echo "TAG=${TAG:-}"
+          echo "CHANNEL=${CHANNEL:-}"
+          echo "=== GENERATED FILES ==="
+          find repo -type f -print | sort
+
+          ADDON_ZIP="repo/${ADDON_ID}/${ADDON_ID}-${VERSION}.zip"
+          REPOSITORY_ZIP="repo/${REPOSITORY_ID}/${REPOSITORY_ID}-${VERSION}.zip"
+          REPOSITORY_ROOT_ZIP="repo/${REPOSITORY_ID}-${VERSION}.zip"
+
+          echo "Expected addon ZIP:"
+          echo "$ADDON_ZIP"
+          echo "Expected repository ZIP:"
+          echo "$REPOSITORY_ZIP"
+          echo "Expected repository ZIP copy:"
+          echo "$REPOSITORY_ROOT_ZIP"
+
+          for artifact in "$ADDON_ZIP" "$REPOSITORY_ZIP" "$REPOSITORY_ROOT_ZIP" "repo/addons.xml" "repo/addons.xml.md5"; do
+            if ! test -f "$artifact"; then
+              echo "[FAIL] Missing release artifact: ${artifact}" >&2
+              exit 1
+            fi
+          done
+          echo "All required release artifacts exist."
+
+      - name: Validate generated release
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          REPOSITORY_ID: ${{ steps.release.outputs.repository_id }}
+        run: |
+          set -euo pipefail
           python3 addon/scripts/validate_release.py \
             --tag "$GITHUB_REF_NAME" \
             --version "$VERSION" \
@@ -142,6 +168,46 @@ jobs:
             --output-dir repo \
             --addon-zip "repo/${ADDON_ID}/${ADDON_ID}-${VERSION}.zip" \
             --repository-zip "repo/${REPOSITORY_ID}/${REPOSITORY_ID}-${VERSION}.zip"
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+          CHANNEL: ${{ steps.release.outputs.channel }}
+          REPOSITORY_ID: ${{ steps.release.outputs.repository_id }}
+        run: |
+          set -euo pipefail
+          ADDON_ZIP="repo/${ADDON_ID}/${ADDON_ID}-${VERSION}.zip"
+          REPOSITORY_ZIP="repo/${REPOSITORY_ID}/${REPOSITORY_ID}-${VERSION}.zip"
+          REPOSITORY_ROOT_ZIP="repo/${REPOSITORY_ID}-${VERSION}.zip"
+          for artifact in "$ADDON_ZIP" "$REPOSITORY_ZIP" "$REPOSITORY_ROOT_ZIP" "repo/addons.xml" "repo/addons.xml.md5"; do
+            if ! test -f "$artifact"; then
+              echo "[FAIL] Missing release artifact: ${artifact}" >&2
+              exit 1
+            fi
+          done
+          ASSETS=(
+            "$ADDON_ZIP"
+            "$REPOSITORY_ZIP"
+            "repo/addons.xml"
+            "repo/addons.xml.md5"
+          )
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          elif [[ "$CHANNEL" == "beta" ]]; then
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --title "JioTV Direct ${TAG}" \
+              --notes "Community-maintained beta release. Based on dineshintry/plugin.kodi.jiotv." \
+              --prerelease
+          else
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --title "JioTV Direct ${TAG}" \
+              --notes "Community-maintained release. Based on dineshintry/plugin.kodi.jiotv."
+          fi
+          echo "[PASS] GitHub Release is present with the generated release artifacts"
 
       - name: Deploy stable repository
         if: steps.release.outputs.channel == 'stable'
@@ -197,27 +263,3 @@ jobs:
           done
           echo "[FAIL] Expected published artifacts were not found under ${BASE}" >&2
           exit 1
-
-      - name: Create or update GitHub Release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.release.outputs.tag }}
-          VERSION: ${{ steps.release.outputs.version }}
-          CHANNEL: ${{ steps.release.outputs.channel }}
-          ADDON_ZIP: repo/plugin.kodi.jiotv/plugin.kodi.jiotv-${{ steps.release.outputs.version }}.zip
-        run: |
-          set -euo pipefail
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$ADDON_ZIP" --clobber
-          elif [[ "$CHANNEL" == "beta" ]]; then
-            gh release create "$TAG" "$ADDON_ZIP" \
-              --title "JioTV Direct ${TAG}" \
-              --notes "Community-maintained beta release. Based on dineshintry/plugin.kodi.jiotv." \
-              --prerelease
-          else
-            gh release create "$TAG" "$ADDON_ZIP" \
-              --title "JioTV Direct ${TAG}" \
-              --notes "Community-maintained release. Based on dineshintry/plugin.kodi.jiotv."
-          fi
-          echo "[PASS] GitHub Release is present with the addon ZIP"
