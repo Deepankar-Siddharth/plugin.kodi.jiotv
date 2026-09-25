@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addons><addon id="plugin.kodi.jiotv" name="JioTV Direct" version="1.5.0" provider-name="Deepankar-Siddharth">
+<addons><addon id="plugin.kodi.jiotv" name="JioTV Direct" version="1.5.1" provider-name="Deepankar-Siddharth">
     <requires>
         <import addon="xbmc.python" version="3.0.0" />
         <import addon="script.module.codequick" version="1.0.2" />
@@ -29,6 +29,11 @@
         <platform>all</platform>
         <license>MIT</license>
         <news>
+v1.5.1
+- Fixed: Release packaging now generates and verifies the addon and repository ZIPs before creating a GitHub Release.
+- Fixed: Stable and beta release assets now use the generated versioned ZIP, repository metadata, and MD5 files.
+- Improved: Release output is cleaned before packaging so stale artifacts cannot be published.
+
 v1.5.0
 - Added: Remote-friendly Favorites and Recently Watched home sections with persistent, non-sensitive history.
 - Added: Cached channel and EPG programme search with favourites priority and Unicode-safe matching.
@@ -152,7 +157,7 @@ v1.1.2
         </assets>
         <reuselanguageinvoker>true</reuselanguageinvoker>
     </extension>
-</addon><addon id="repository.jiotvdirect" name="JioTV Direct Repository (Community Fork)" version="1.5.0" provider-name="Deepankar-Siddharth">
+</addon><addon id="repository.jiotvdirect" name="JioTV Direct Repository (Community Fork)" version="1.5.1" provider-name="Deepankar-Siddharth">
     <extension point="xbmc.addon.repository" name="JioTV Direct Repository">
         <dir>
             <info compressed="false">https://deepankar-siddharth.github.io/plugin.kodi.jiotv/addons.xml</info>
