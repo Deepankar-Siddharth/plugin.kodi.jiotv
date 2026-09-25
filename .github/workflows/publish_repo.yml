@@ -205,7 +205,7 @@ jobs:
           TAG: ${{ steps.release.outputs.tag }}
           VERSION: ${{ steps.release.outputs.version }}
           CHANNEL: ${{ steps.release.outputs.channel }}
-          ADDON_ZIP: repo/plugin.kodi.jiotv/plugin.kodi.jiotv-${VERSION}.zip
+          ADDON_ZIP: repo/plugin.kodi.jiotv/plugin.kodi.jiotv-${{ steps.release.outputs.version }}.zip
         run: |
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
