@@ -145,7 +145,7 @@ Local checks:
 
 ```text
 python -m py_compile addon.py service.py resources/lib/*.py scripts/*.py
-python scripts/validate_release.py --tag v1.5.1 --source-root . --source-only
+python scripts/validate_release.py --tag v1.5.2 --source-root . --source-only
 ```
 
 The full release validator expects the workflow's temporary `repo/` directory
@@ -155,7 +155,7 @@ high-confidence credential patterns.
 
 ## Release channels
 
-- **Stable** — tags such as `v1.5.1`; normal GitHub releases and the stable
+- **Stable** — tags such as `v1.5.2`; normal GitHub releases and the stable
   repository path.
 - **Beta** — tags such as `v1.6.0-beta.1`; GitHub prereleases and the `/beta/`
   repository path.

@@ -33,6 +33,7 @@ EXCLUDED_DIRS = frozenset((
     "temp",
     "temp_repo",
     "test_scripts",
+    "website",
 ))
 EXCLUDED_FILES = frozenset((
     ".DS_Store",

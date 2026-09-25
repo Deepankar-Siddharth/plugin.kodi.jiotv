@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="repository.jiotvdirect" name="JioTV Direct Repository (Community Fork)" version="1.5.1" provider-name="Deepankar-Siddharth">
+<addon id="repository.jiotvdirect" name="JioTV Direct Repository (Community Fork)" version="1.5.2" provider-name="Deepankar-Siddharth">
     <extension point="xbmc.addon.repository" name="JioTV Direct Repository">
         <dir>
             <info compressed="false">https://deepankar-siddharth.github.io/plugin.kodi.jiotv/addons.xml</info>

@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 ADDON_ID = "plugin.kodi.jiotv"
 FORBIDDEN_PATHS = (
     ".git/", ".github/", ".agents/", "__pycache__/", ".pytest_cache/",
-    "kodi.log", "test_scripts/", "scratch/", "scripts/",
+    "kodi.log", "test_scripts/", "scratch/", "scripts/", "website/",
 )
 FORBIDDEN_DISTRIBUTION_HOST = "dineshintry.github.io"
 FORK_DISTRIBUTION_PREFIX = "https://deepankar-siddharth.github.io/plugin.kodi.jiotv/"

@@ -117,6 +117,24 @@ jobs:
             --version "$VERSION" \
             --output-dir repo
 
+      - name: Build website
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          REPOSITORY_ID: ${{ steps.release.outputs.repository_id }}
+          CHANNEL: ${{ steps.release.outputs.channel }}
+        run: |
+          set -euo pipefail
+          RELEASE_DATE="$(git -C addon log -1 --format=%cs HEAD)"
+          python3 addon/scripts/build_site.py \
+            --source-dir addon/website \
+            --output-dir repo \
+            --version "$VERSION" \
+            --channel "$CHANNEL" \
+            --repository-id "$REPOSITORY_ID" \
+            --release-date "$RELEASE_DATE" \
+            --pages-base-url "https://${PAGES_OWNER}.github.io/plugin.kodi.jiotv/"
+
       - name: Verify generated release artifacts
         shell: bash
         env:
@@ -140,7 +158,11 @@ jobs:
           echo "$ADDON_ZIP"
           echo "Expected repository ZIP:"
           echo "$REPOSITORY_ZIP"
-          for artifact in "$ADDON_ZIP" "$REPOSITORY_ZIP" "repo/addons.xml" "repo/addons.xml.md5"; do
+          echo "Expected website files:"
+          echo "repo/index.html"
+          echo "repo/style.css"
+          echo "repo/.nojekyll"
+          for artifact in "$ADDON_ZIP" "$REPOSITORY_ZIP" "repo/addons.xml" "repo/addons.xml.md5" "repo/index.html" "repo/style.css" "repo/.nojekyll" "repo/assets/logo.svg"; do
             if ! test -f "$artifact"; then
               echo "[FAIL] Missing release artifact: ${artifact}" >&2
               exit 1
@@ -236,6 +258,10 @@ jobs:
             BASE="${BASE}/beta"
           fi
           required=(
+            "index.html"
+            "style.css"
+            ".nojekyll"
+            "assets/logo.svg"
             "addons.xml"
             "addons.xml.md5"
             "plugin.kodi.jiotv/plugin.kodi.jiotv-${VERSION}.zip"

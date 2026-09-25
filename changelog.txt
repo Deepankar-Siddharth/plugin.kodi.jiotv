@@ -1,3 +1,8 @@
+1.5.2
+- Added a responsive JioTV Direct project website with stable and beta repository links.
+- Improved Pages to publish a top-level landing page alongside the existing Kodi repository files.
+- Improved website download links and release metadata to use the active tag version.
+
 1.5.1
 - Fixed release packaging to generate and verify the addon and repository ZIPs before creating a GitHub Release.
 - Fixed stable and beta release asset attachment to use the generated versioned ZIPs, addons.xml, and MD5.
