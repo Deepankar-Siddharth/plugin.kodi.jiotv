@@ -1,3 +1,8 @@
+1.5.1
+- Fixed release packaging to generate and verify the addon and repository ZIPs before creating a GitHub Release.
+- Fixed stable and beta release asset attachment to use the generated versioned ZIPs, addons.xml, and MD5.
+- Improved release output cleanup to prevent stale artifacts from being published.
+
 1.5.0
 - Added a remote-friendly home screen with Live TV, Favorites, Recently Watched, TV Guide, Search, Catch-Up, and VOD entries.
 - Added stable channel/programme favourites with migration and synchronization for the existing PVR favourites list.
