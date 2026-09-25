@@ -49,6 +49,12 @@ def find_available_port(start_port=48996, max_attempts=10):
 
 _PORT = find_available_port()
 proxy.PROXY_PORT = _PORT
+try:
+    from codequick.storage import PersistentDict
+    with PersistentDict("localdb") as db:
+        db["proxy_port"] = _PORT
+except Exception:
+    pass
 Script.log(f"Starting JioTV proxy on port: {_PORT}", lvl=Script.INFO)
 
 try:
@@ -185,9 +191,9 @@ def _check_dev_server():
     if enabled and not devtools.is_running():
         result = devtools.start_server()
         if result:
-            ip, port = result
+            ip, port, _token = result
             _dev_server_running = True
-            Script.log(f"[DEV] Dev server started at http://{ip}:{port}/", lvl=Script.INFO)
+            Script.log(f"[DEV] Dev server started on port {port}", lvl=Script.INFO)
 
     elif not enabled and devtools.is_running():
         devtools.stop_server()

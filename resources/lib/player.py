@@ -1,53 +1,138 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 
-import sys
-import m3u8
-import xbmc
+import re
+import threading
 import xbmcgui
-import xbmcplugin
-import urlquick
 import requests
 import inputstreamhelper
 from uuid import uuid4
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlencode, quote
+from urllib.parse import urlencode, quote, urlsplit
 from resources.lib import proxy
 from codequick import Resolver, Script
 from codequick.script import Settings
 from resources.lib.constants import IMG_CATCHUP
+from resources.lib.recent import record_item as record_recent_item
 from resources.lib.utils import (
     getHeaders,
     isLoggedIn,
     getSonyHeaders,
     getZeeHeaders,
     zeeCookie,
-    quality_to_enum,
     getCachedChannels,
     get_session,
 )
 
+
+def _record_recent_playback(plugin, channel_id, name, logo, kind="channel", params=None, program_name=None):
+    """Record only safe, reopenable metadata after a stream is resolved."""
+    try:
+        record_recent_item(
+            channel_id=channel_id,
+            name=name,
+            logo=logo,
+            kind=kind,
+            params=params or {"channel_id": str(channel_id)},
+            program_name=program_name,
+        )
+    except Exception as exc:
+        Script.log(f"[RECENT] Unable to record playback history: {exc}", lvl=Script.WARNING)
+
+
+def _get_playback_settings():
+    """Read new playback settings while accepting the legacy quality value."""
+    supported = {"Auto", "Best Available", "1080p", "720p", "480p", "360p", "Manual"}
+    try:
+        mode = Settings.get_string("playback_quality")
+    except Exception:
+        mode = ""
+    if mode not in supported:
+        legacy = "Manual"
+        try:
+            legacy = Settings.get_string("quality") or legacy
+        except Exception:
+            pass
+        mode = {
+            "Best": "Best Available",
+            "High": "720p",
+            "Medium+": "720p",
+            "Medium": "480p",
+            "Low": "360p",
+            "Lower": "360p",
+            "Lowest": "360p",
+            "Ask-me": "Manual",
+        }.get(legacy, "Auto")
+    try:
+        adaptive = Settings.get_boolean("adaptive_streaming")
+    except Exception:
+        adaptive = True
+    try:
+        max_resolution = Settings.get_string("max_resolution") or "Auto"
+    except Exception:
+        max_resolution = "Auto"
+    try:
+        max_bitrate = int(Settings.get_integer("max_bitrate") or 0)
+    except Exception:
+        try:
+            max_bitrate = int(Settings.get_string("max_bitrate") or 0)
+        except Exception:
+            max_bitrate = 0
+    return mode, adaptive, max_resolution, max(max_bitrate, 0)
+
+
+def _quality_height(mode):
+    match = re.match(r"^(\d{3,4})p?$", str(mode or ""))
+    return int(match.group(1)) if match else 0
+
+
+def _show_playback_error(title="Playback Error"):
+    xbmcgui.Dialog().ok(
+        title,
+        "Unable to play this channel.\n\n"
+        "Possible reasons:\n"
+        "• Stream temporarily unavailable\n"
+        "• Authentication or session expired\n"
+        "• Channel is offline\n"
+        "• Network connection problem\n\n"
+        "Try again, open the channel again, or go back.",
+    )
+
+
+def _safe_uri_for_log(uri):
+    try:
+        parsed = urlsplit(str(uri or ""))
+        return "{0}://{1}{2}".format(parsed.scheme, parsed.netloc, parsed.path)
+    except Exception:
+        return "<stream URL>"
+
+
+def _get_proxy_port():
+    try:
+        from codequick.storage import PersistentDict
+        with PersistentDict("localdb") as db:
+            return int(db.get("proxy_port", getattr(proxy, "PROXY_PORT", 48996)))
+    except Exception:
+        return int(getattr(proxy, "PROXY_PORT", 48996))
+
+
 def probe_and_log_audio_streams(channel_id, channel_name, uri, manifest_type, manifest_text, headers=None):
     try:
         Script.log(f"==================== [AUDIO-PROBE START] Channel ID: {channel_id} | Name: {channel_name} | Type: {manifest_type} ====================", lvl=Script.INFO)
-        Script.log(f"[AUDIO-PROBE] Manifest URL: {uri}", lvl=Script.INFO)
+        Script.log(f"[AUDIO-PROBE] Manifest host/path: {_safe_uri_for_log(uri)}", lvl=Script.INFO)
 
         if manifest_type.lower() == "hls":
             try:
                 import m3u8
                 parsed = m3u8.loads(manifest_text)
                 
-                Script.log("[AUDIO-PROBE][HLS] --- Raw Master Playlist ---", lvl=Script.INFO)
-                for line in manifest_text.splitlines():
-                    if line.strip():
-                        Script.log(f"[AUDIO-PROBE][HLS][RAW] {line}", lvl=Script.INFO)
-
+                Script.log("[AUDIO-PROBE][HLS] Master playlist metadata", lvl=Script.INFO)
                 audio_media = [m for m in parsed.media if m.type == "AUDIO"]
                 Script.log(f"[AUDIO-PROBE][HLS] --- Audio Media Tracks Count: {len(audio_media)} ---", lvl=Script.INFO)
                 if audio_media:
                     for i, m in enumerate(audio_media):
                         Script.log(
-                            f"[AUDIO-PROBE][HLS][AUDIO-TRACK {i+1}] GroupID: {getattr(m, 'group_id', None)} | Name: {getattr(m, 'name', None)} | Language: {getattr(m, 'language', None)} | Default: {getattr(m, 'default', None)} | AutoSelect: {getattr(m, 'autoselect', None)} | Channels: {getattr(m, 'channels', None)} | URI: {getattr(m, 'uri', None)}",
+                            f"[AUDIO-PROBE][HLS][AUDIO-TRACK {i+1}] GroupID: {getattr(m, 'group_id', None)} | Name: {getattr(m, 'name', None)} | Language: {getattr(m, 'language', None)} | Default: {getattr(m, 'default', None)} | AutoSelect: {getattr(m, 'autoselect', None)} | Channels: {getattr(m, 'channels', None)}",
                             lvl=Script.INFO
                         )
                         if getattr(m, 'uri', None):
@@ -58,12 +143,15 @@ def probe_and_log_audio_streams(channel_id, channel_name, uri, manifest_type, ma
                             try:
                                 sub_resp = get_session().get(audio_sub_uri, headers=headers, timeout=(3, 5))
                                 if sub_resp.status_code == 200:
-                                    Script.log(f"[AUDIO-PROBE][HLS][AUDIO-TRACK {i+1}-SUBPLAYLIST] Raw Content:", lvl=Script.INFO)
-                                    for sub_line in sub_resp.text.splitlines():
-                                        if sub_line.strip():
-                                            Script.log(f"[AUDIO-PROBE][HLS][AUDIO-TRACK {i+1}-SUB] {sub_line}", lvl=Script.INFO)
-                            except Exception as sub_err:
-                                Script.log(f"[AUDIO-PROBE][HLS][AUDIO-TRACK {i+1}-SUBPLAYLIST] Fetch failed: {sub_err}", lvl=Script.INFO)
+                                    Script.log(
+                                        f"[AUDIO-PROBE][HLS][AUDIO-TRACK {i+1}] Sub-playlist fetched",
+                                        lvl=Script.DEBUG,
+                                    )
+                            except Exception:
+                                Script.log(
+                                    f"[AUDIO-PROBE][HLS][AUDIO-TRACK {i+1}] Sub-playlist unavailable",
+                                    lvl=Script.DEBUG,
+                                )
                 else:
                     Script.log("[AUDIO-PROBE][HLS] No explicit #EXT-X-MEDIA:TYPE=AUDIO tracks found in master playlist.", lvl=Script.INFO)
 
@@ -75,20 +163,16 @@ def probe_and_log_audio_streams(channel_id, channel_name, uri, manifest_type, ma
                     codecs = getattr(stream_info, 'codecs', None)
                     audio_grp = getattr(stream_info, 'audio', None)
                     Script.log(
-                        f"[AUDIO-PROBE][HLS][VARIANT {i+1}] Bandwidth: {bw} | Resolution: {res} | Codecs: {codecs} | AudioGroup: {audio_grp} | URI: {pl.uri}",
+                        f"[AUDIO-PROBE][HLS][VARIANT {i+1}] Bandwidth: {bw} | Resolution: {res} | Codecs: {codecs} | AudioGroup: {audio_grp}",
                         lvl=Script.INFO
                     )
-            except Exception as e:
-                Script.log(f"[AUDIO-PROBE][HLS] Error parsing HLS M3U8: {e}", lvl=Script.ERROR)
+            except Exception:
+                Script.log("[AUDIO-PROBE][HLS] Unable to parse manifest metadata", lvl=Script.ERROR)
 
         elif manifest_type.lower() == "mpd":
             try:
                 import xml.etree.ElementTree as ET
-                Script.log("[AUDIO-PROBE][MPD] --- Raw MPD XML ---", lvl=Script.INFO)
-                for line in manifest_text.splitlines():
-                    if line.strip():
-                        Script.log(f"[AUDIO-PROBE][MPD][RAW] {line}", lvl=Script.INFO)
-
+                Script.log("[AUDIO-PROBE][MPD] Manifest metadata", lvl=Script.INFO)
                 root_elem = ET.fromstring(manifest_text)
                 adapt_sets = root_elem.findall(".//{*}AdaptationSet")
                 Script.log(f"[AUDIO-PROBE][MPD] --- Total AdaptationSets found: {len(adapt_sets)} ---", lvl=Script.INFO)
@@ -134,19 +218,19 @@ def probe_and_log_audio_streams(channel_id, channel_name, uri, manifest_type, ma
                 if audio_set_count == 0:
                     Script.log("[AUDIO-PROBE][MPD] No dedicated Audio AdaptationSets detected in MPD XML.", lvl=Script.INFO)
 
-            except Exception as e:
-                Script.log(f"[AUDIO-PROBE][MPD] Error parsing MPD XML: {e}", lvl=Script.ERROR)
+            except Exception:
+                Script.log("[AUDIO-PROBE][MPD] Unable to parse manifest metadata", lvl=Script.ERROR)
 
         Script.log(f"==================== [AUDIO-PROBE END] Channel ID: {channel_id} ====================", lvl=Script.INFO)
-    except Exception as general_err:
-        Script.log(f"[AUDIO-PROBE] General logging error: {general_err}", lvl=Script.ERROR)
+    except Exception:
+        Script.log("[AUDIO-PROBE] Diagnostic logging failed", lvl=Script.ERROR)
 
 
 @Resolver.register
 @isLoggedIn
 def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=None, end=None, languageId=None, is_extra=None, utc=None, utcend=None, **kwargs):
     channel_id = str(channel_id)
-    Script.log(f"[VOD-DEBUG] PLAY function called with: channel_id={channel_id}, showtime={showtime}, srno={srno}, programId={programId}, begin={begin}, end={end}, is_extra={is_extra}, utc={utc}, utcend={utcend}, kwargs={kwargs}", lvl=Script.INFO)
+    Script.log(f"[PLAY] Resolver invoked for channel {channel_id} ({'extra' if is_extra else 'standard'})", lvl=Script.DEBUG)
     
     if is_extra == "true" or is_extra is True:
         from resources.lib.utils import getExtraChannels
@@ -199,10 +283,17 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
                 ex_resp = get_session().get(uriToUse, headers=custom_headers, timeout=(5, 10))
                 if ex_resp.status_code == 200:
                     probe_and_log_audio_streams(channel_id, chan_data.get("channel_name", "Extra Channel"), uriToUse, "mpd" if isMpd else "hls", ex_resp.text, headers=custom_headers)
-            except Exception as ex_err:
-                Script.log(f"[AUDIO-PROBE] Extra channel manifest fetch failed: {ex_err}", lvl=Script.WARNING)
+            except Exception:
+                Script.log("[PLAY] Extra channel manifest probe failed", lvl=Script.WARNING)
             
-        Script.log(f"[AUDIO-PROBE][PROPS] Extra Channel {channel_id} Properties: {props}", lvl=Script.INFO)
+        Script.log(f"[PLAY] Extra channel {channel_id} playback properties prepared", lvl=Script.DEBUG)
+        _record_recent_playback(
+            plugin,
+            channel_id,
+            chan_data.get("channel_name", "Channel {0}".format(channel_id)),
+            logoUrl,
+            params={"channel_id": str(channel_id), "is_extra": "true"},
+        )
         from codequick import Listitem as CQListitem
         return CQListitem().from_dict(
             **{
@@ -218,8 +309,9 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
         is_helper = inputstreamhelper.Helper("mpd", drm="com.widevine.alpha")
         hasIs = is_helper.check_inputstream()
         if not hasIs:
-            Script.log("[VOD-DEBUG] InputStream helper check failed", lvl=Script.ERROR)
-            return
+            Script.log("[PLAY] InputStream Adaptive is unavailable", lvl=Script.ERROR)
+            _show_playback_error("Playback Unavailable")
+            return False
 
         channel_id_str = str(channel_id)
 
@@ -279,9 +371,9 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
 
         # Determine if programme is currently on air (live) or in the future
         is_currently_live = False
-        if end_dt and end_dt > now_utc:
+        if start_dt and end_dt and start_dt <= now_utc < end_dt:
             is_currently_live = True
-        elif start_dt and start_dt <= now_utc and (now_utc - start_dt).total_seconds() < 1800:
+        elif start_dt and start_dt <= now_utc and not end_dt and (now_utc - start_dt).total_seconds() < 1800:
             # Started recently within 30 mins
             is_currently_live = True
 
@@ -312,12 +404,13 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
             if is_currently_live:
                 Script.log(f"[VOD-DEBUG] CURRENT PROGRAMME ON AIR (end_dt={end_dt}, now={now_utc}): Switching to live stream (stream_type=Seek)", lvl=Script.INFO)
             else:
-                Script.log(f"[VOD-DEBUG] LIVE STREAM REQUEST: stream_type=Seek (no VOD params provided)", lvl=Script.INFO)
+                Script.log("[VOD-DEBUG] LIVE STREAM REQUEST: stream_type=Seek (no VOD params provided)", lvl=Script.INFO)
 
             headers = getHeaders()
             headers["channelid"] = str(channel_id)
             headers["srno"] = str(uuid4())
 
+        sony_headers = {}
         zee_channels = {
             "5016": "https://z5ak-cmaflive.zee5.com/cmaf/live/2105525/ZeeAnmolCinemaELE/master.m3u8",
             "5017": "https://z5ak-cmaflive.zee5.com/cmaf/live/2105527/ZeeActionELE/master.m3u8",
@@ -389,7 +482,6 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
             # On Android TV via hotspot, socket-level timeouts don't work —
             # TCP connects but TLS/HTTP hangs indefinitely. A thread timeout
             # ensures we always get a result within the deadline.
-            import threading
             import time as _time
 
             _api_url = "https://jiotvapi.media.jio.com/playback/apis/v1.1/geturl"
@@ -407,7 +499,7 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
 
             # Attempt 1: use persistent session (fast if TLS is cached)
             t_start = _time.time()
-            Script.log(f"[PLAY] API call starting (attempt 1)...", lvl=Script.INFO)
+            Script.log("[PLAY] API call starting (attempt 1)...", lvl=Script.INFO)
             api_thread = threading.Thread(target=_do_api_call, args=(get_session(),))
             api_thread.daemon = True
             api_thread.start()
@@ -421,7 +513,7 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
                 _api_result[0] = None
                 _api_error[0] = None
                 fresh_session = requests.Session()
-                fresh_session.verify = False
+                fresh_session.verify = True
                 t_start = _time.time()
                 api_thread2 = threading.Thread(target=_do_api_call, args=(fresh_session,))
                 api_thread2.daemon = True
@@ -430,14 +522,13 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
 
                 if api_thread2.is_alive() or _api_result[0] is None:
                     elapsed = _time.time() - t_start
-                    err_msg = str(_api_error[0]) if _api_error[0] else "Connection timed out"
-                    Script.log(f"[PLAY] API call attempt 2 also failed after {elapsed:.1f}s: {err_msg}", lvl=Script.ERROR)
+                    Script.log(f"[PLAY] API call attempt 2 also failed after {elapsed:.1f}s", lvl=Script.ERROR)
                     Script.notify("Connection Failed", "JioTV API unreachable. Try WiFi or retry.")
                     return False
 
             if _api_error[0]:
-                Script.log(f"[PLAY] API error: {_api_error[0]}", lvl=Script.ERROR)
-                Script.notify("Connection Error", str(_api_error[0])[:100])
+                Script.log("[PLAY] API request failed", lvl=Script.ERROR)
+                Script.notify("Connection Error", "The streaming service could not be reached.")
                 return False
 
             res = _api_result[0]
@@ -445,7 +536,7 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
             Script.log(f"[PLAY] API call completed in {elapsed:.1f}s, status={res.status_code}", lvl=Script.INFO)
 
             if res.status_code != 200:
-                Script.log(f"VOD API Error: {res.status_code} - {res.text}", lvl=Script.ERROR)
+                Script.log("Playback API returned HTTP {0}".format(res.status_code), lvl=Script.ERROR)
                 # If Catchup request failed with 400 Bad Request, automatically fall back to live Seek stream
                 if isCatchup and res.status_code == 400:
                     Script.log(f"[PLAY] Catchup API returned 400 for channel {chan}. Automatically falling back to live stream (Seek)...", lvl=Script.WARNING)
@@ -473,9 +564,10 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
                     if "Sony Srno data is not mapped" in err_msg:
                         Script.notify("Catchup Unavailable", "SET catchup is unmapped on JioTV (exclusive to SonyLIV).")
                     elif err_msg:
-                        Script.notify("Playback Error", err_msg)
+                        Script.log("Playback service returned a non-success response", lvl=Script.WARNING)
+                        _show_playback_error()
                     else:
-                        Script.notify("Playback Error", f"API returned {res.status_code}")
+                        _show_playback_error()
                     return False
 
             api_response = res.json()
@@ -486,32 +578,24 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
             sonyheaders.setdefault("user-agent", "jiotv")
             sonyheaders = {k: str(v) for k, v in sonyheaders.items() if v}
 
-        if channel_id not in [
-            "5000", "5001", "5002", "5003", "5004", "5005", "5006", "5007", "5008", "5009",
-            "5010", "5011", "5012", "5013", "5014", "5015", "5016", "5017", "5018", "5019",
-            "5020", "5021", "5022", "5023", "5024", "5025", "5026",
-        ]:
+        if channel_id not in zee_channels:
             resp = res.json()
-        
+
         final_url = ""
-        if channel_id in ["5016", "5017", "5023", "5024", "5025", "5026"]:
+        if channel_id in zee_channels:
             final_url = url
         else:
-            final_url = resp.get("result", "") if 'resp' in locals() else ""
+            final_url = resp.get("result", "")
 
         art = {}
-        if channel_id not in [
-            "5000", "5001", "5002", "5003", "5004", "5005", "5006", "5007", "5008", "5009",
-            "5010", "5011", "5012", "5013", "5014", "5015", "5016", "5017", "5018", "5019",
-            "5020", "5021", "5022", "5023", "5024", "5025", "5026",
-        ]:
+        if channel_id not in zee_channels:
             onlyUrl = resp.get("result", "").split("?")[0].split("/")[-1]
         else:
             onlyUrl = final_url.split("?")[0].split("/")[-1]
 
         art["thumb"] = art["icon"] = IMG_CATCHUP + onlyUrl.replace(".m3u8", ".png")
 
-        if channel_id in ["5016", "5017", "5023", "5024", "5025", "5026"]:
+        if channel_id in zee_channels:
             cookie = url.split("?")[1] if "?hdntl=" in url else ""
             uriToUse = final_url
         else:
@@ -519,7 +603,7 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
             uriToUse = resp.get("result", "")
 
         if "paywall" in uriToUse.lower():
-            Script.log(f"[PLAY] Subscription paywall detected in URL: {uriToUse}", lvl=Script.ERROR)
+            Script.log("[PLAY] Subscription paywall response detected", lvl=Script.ERROR)
             xbmcgui.Dialog().ok(
                 "Subscription Required",
                 "This channel requires an active JioTV subscription. Please recharge to a valid JioTV subscription plan (e.g., JioTV Pro pack or OTT pass) to get this content loading."
@@ -527,8 +611,25 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
             return False
 
         headers["cookie"] = cookie
-        qltyopt = Settings.get_string("quality")
+        quality_mode, adaptive_enabled, configured_max, configured_bitrate = _get_playback_settings()
+        fixed_height = _quality_height(quality_mode)
         selectionType = "adaptive"
+        if quality_mode == "Manual":
+            selectionType = "manual-osd"
+        elif fixed_height:
+            selectionType = "fixed-res"
+        elif not adaptive_enabled:
+            selectionType = "manual-osd"
+        max_height = fixed_height
+        if configured_max.isdigit():
+            configured_height = int(configured_max)
+            if max_height:
+                max_height = min(max_height, configured_height)
+            else:
+                max_height = configured_height
+        elif quality_mode == "Best Available":
+            max_height = 0
+        max_resolution_value = str(max_height) if max_height else ("max" if quality_mode == "Best Available" else "")
         
         mpd_data = resp.get("mpd") if 'resp' in locals() else None
         isMpd = isinstance(mpd_data, dict) and mpd_data.get("result")
@@ -562,7 +663,7 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
                 )
                 if mpd_resp.status_code == 404:
                     mpd_resp.close()
-                    Script.log(f"[PLAY] MPD manifest returned 404 Not Found from CDN: {uriToUse}", lvl=Script.ERROR)
+                    Script.log("[PLAY] MPD manifest returned 404 Not Found from CDN", lvl=Script.ERROR)
                     if isCatchup:
                         Script.notify("Catchup Unavailable", "This program is not available in JioTV archive.")
                     else:
@@ -570,7 +671,7 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
                     return False
                 elif mpd_resp.status_code >= 400:
                     mpd_resp.close()
-                    Script.log(f"[PLAY] MPD manifest returned HTTP {mpd_resp.status_code} from CDN: {uriToUse}", lvl=Script.ERROR)
+                    Script.log("[PLAY] MPD manifest returned HTTP {0} from CDN".format(mpd_resp.status_code), lvl=Script.ERROR)
                     Script.notify("Playback Error", f"CDN returned HTTP {mpd_resp.status_code}")
                     return False
 
@@ -580,10 +681,10 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
                 c_dict.update(mpd_resp.cookies.get_dict())
                 cookie_str = "; ".join([f"{k}={v}" for k, v in c_dict.items()])
                 mpd_resp.close()
-                Script.log(f"[MPD] Cookies fetched: {cookie_str}", lvl=Script.INFO)
+                Script.log("[MPD] CDN cookies received ({0} values)".format(len(c_dict)), lvl=Script.DEBUG)
                 probe_and_log_audio_streams(channel_id, plugin._title or f"Channel {channel_id}", uriToUse, "mpd", mpd_text)
-            except Exception as e:
-                Script.log(f"Cookie fetch failed: {e}", lvl=Script.ERROR)
+            except Exception:
+                Script.log("[PLAY] CDN cookie bootstrap failed", lvl=Script.ERROR)
 
             # Construct license headers
             license_headers = headers.copy()
@@ -614,9 +715,11 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
                 "post_data": "H{SSM}",
             }
 
-        if qltyopt == "Ask-me":
-            selectionType = "ask-quality"
-        if qltyopt == "Manual":
+        if quality_mode == "Manual":
+            selectionType = "manual-osd"
+        elif fixed_height:
+            selectionType = "fixed-res"
+        elif not adaptive_enabled:
             selectionType = "manual-osd"
 
         if not isMpd:
@@ -627,83 +730,48 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
                 "Accesstoken": sony_headers.get("Accesstoken", ""),
             }
 
-        if not isMpd and not qltyopt == "Manual":
-
-            # Thread-timed M3U8 fetch — urlquick hangs on Android hotspot
-            _m3u8_result = [None]
-            _m3u8_error = [None]
-            def _fetch_m3u8():
-                try:
-                    if channel_id in [
-                        "5000", "5001", "5002", "5003", "5004", "5005", "5006", "5007", "5008", "5009",
-                        "5010", "5011", "5012", "5013", "5014", "5015", "5016", "5017", "5018", "5019",
-                        "5020", "5021", "5022", "5023", "5024", "5025", "5026",
-                    ]:
-                        _m3u8_result[0] = get_session().get(
-                            uriToUse, headers=headerszee, timeout=(5, 15)
-                        )
-                    else:
-                        _m3u8_result[0] = get_session().get(
-                            uriToUse, headers=m3u8Headers, timeout=(5, 15)
-                        )
-                except Exception as e:
-                    _m3u8_error[0] = e
-
-            m3u8_thread = threading.Thread(target=_fetch_m3u8)
-            m3u8_thread.daemon = True
-            m3u8_thread.start()
-            m3u8_thread.join(timeout=20)
-
-            if m3u8_thread.is_alive() or _m3u8_result[0] is None:
-                err = str(_m3u8_error[0]) if _m3u8_error[0] else "Timed out"
-                Script.log(f"[PLAY] M3U8 fetch failed: {err}", lvl=Script.ERROR)
-                Script.notify("Stream Error", "CDN unreachable. Try WiFi or retry.")
-                return False
-
-            m3u8Res = _m3u8_result[0]
-            if m3u8Res.status_code == 404:
-                Script.log(f"[PLAY] M3U8 manifest returned 404 Not Found from CDN: {uriToUse}", lvl=Script.ERROR)
-                if isCatchup:
-                    Script.notify("Catchup Unavailable", "This program is not available in JioTV archive.")
-                else:
-                    Script.notify("Playback Error", "Stream manifest not found (404).")
-                return False
-            m3u8Res.raise_for_status()
-
-            m3u8Headers = {k: str(v) for k, v in m3u8Headers.items() if v}
-            m3u8String = m3u8Res.text
-            probe_and_log_audio_streams(channel_id, plugin._title or f"Channel {channel_id}", uriToUse, "hls", m3u8String, headers=m3u8Headers)
-            variant_m3u8 = m3u8.loads(m3u8String)
-            if variant_m3u8.is_variant and (variant_m3u8.version is None or variant_m3u8.version < 7):
-                quality = quality_to_enum(qltyopt, len(variant_m3u8.playlists))
-                tmpurl = variant_m3u8.playlists[quality].uri
-                if isCatchup and qltyopt == "Best":
-                    pass
-                else:
-                    if "?" in tmpurl:
-                        uriToUse = uriToUse.split("?")[0].replace(onlyUrl, tmpurl)
-                    else:
-                        uriToUse = uriToUse.replace(onlyUrl, tmpurl.split("?")[0])
+        # InputStream Adaptive receives the original HLS manifest and performs
+        # representation selection itself.  Do not pre-fetch or rewrite a
+        # guessed variant URL: a diagnostic CDN failure must not block playback.
 
         if channel_id in hls_channels:
             props = {
                 "IsPlayable": True,
                 "inputstream": "inputstream.adaptive",
                 "inputstream.adaptive.manifest_type": "hls",
+                "inputstream.adaptive.stream_selection_type": selectionType,
             }
+            if max_resolution_value:
+                props["inputstream.adaptive.max_resolution"] = max_resolution_value
+            if configured_bitrate > 0:
+                props["inputstream.adaptive.max_bandwidth"] = str(configured_bitrate)
 
-            if channel_id in [
-                "5000", "5001", "5002", "5003", "5004", "5005", "5006", "5007", "5008", "5009",
-                "5010", "5011", "5012", "5013", "5014", "5015", "5016", "5017", "5018", "5019",
-                "5020", "5021", "5022", "5023", "5024", "5025", "5026",
-            ]:
+            if channel_id in zee_channels:
                 props["inputstream.adaptive.stream_headers"] = urlencode(headerszee)
                 props["inputstream.adaptive.manifest_headers"] = urlencode(headerszee)
             else:
                 props["inputstream.adaptive.stream_headers"] = urlencode(m3u8Headers)
                 props["inputstream.adaptive.manifest_headers"] = urlencode(m3u8Headers)
 
-            Script.log(f"[AUDIO-PROBE][PROPS] Channel {channel_id} (HLS) Properties: {props}", lvl=Script.INFO)
+            Script.log(f"[PLAY] HLS playback properties prepared for channel {channel_id}", lvl=Script.DEBUG)
+            history_params = {"channel_id": str(channel_id), "languageId": languageId or ""}
+            if isCatchup:
+                history_params.update({
+                    "showtime": rjson.get("showtime", ""),
+                    "srno": rjson.get("srno", ""),
+                    "programId": rjson.get("programId", ""),
+                    "begin": rjson.get("begin", ""),
+                    "end": rjson.get("end", ""),
+                })
+            _record_recent_playback(
+                plugin,
+                channel_id,
+                getattr(plugin, "_title", "Channel {0}".format(channel_id)),
+                art.get("thumb", ""),
+                kind="program" if isCatchup else "channel",
+                params=history_params,
+                program_name=getattr(plugin, "_title", "") if isCatchup else None,
+            )
             from codequick import Listitem as CQListitem
             return CQListitem().from_dict(
                 **{
@@ -720,9 +788,12 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
             "IsPlayable": True,
             "inputstream": "inputstream.adaptive",
             "inputstream.adaptive.stream_selection_type": selectionType,
-            "inputstream.adaptive.max_resolution": "1080",
             "inputstream.adaptive.manifest_type": "mpd" if isMpd else "hls",
         }
+        if max_resolution_value:
+            props["inputstream.adaptive.max_resolution"] = max_resolution_value
+        if configured_bitrate > 0:
+            props["inputstream.adaptive.max_bandwidth"] = str(configured_bitrate)
 
         if isMpd:
             props["inputstream.adaptive.license_type"] = "com.widevine.alpha"
@@ -754,15 +825,34 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
 
         callback_uri = uriToUse
         if isMpd:
-            proxy_port = getattr(proxy, 'PROXY_PORT', 48996)
+            proxy_port = _get_proxy_port()
             proxy_mpd_url = f"http://127.0.0.1:{proxy_port}/manifest.mpd?url={quote(uriToUse)}"
             if cookie_str:
                 proxy_mpd_url += f"&cookie={quote(cookie_str)}"
             callback_uri = proxy_mpd_url
-            Script.log(f"[PLAY] Using proxy manifest URL for DASH: {callback_uri}", lvl=Script.INFO)
+            Script.log("[PLAY] Using local proxy for DASH manifest", lvl=Script.DEBUG)
+
+        history_params = {"channel_id": str(channel_id), "languageId": languageId or ""}
+        if isCatchup:
+            history_params.update({
+                "showtime": rjson.get("showtime", ""),
+                "srno": rjson.get("srno", ""),
+                "programId": rjson.get("programId", ""),
+                "begin": rjson.get("begin", ""),
+                "end": rjson.get("end", ""),
+            })
+        _record_recent_playback(
+            plugin,
+            channel_id,
+            getattr(plugin, "_title", "Channel {0}".format(channel_id)),
+            art.get("thumb", ""),
+            kind="program" if isCatchup else "channel",
+            params=history_params,
+            program_name=getattr(plugin, "_title", "") if isCatchup else None,
+        )
 
         from codequick import Listitem as CQListitem
-            
+
         return CQListitem().from_dict(
             **{
                 "label": plugin._title,
@@ -771,13 +861,13 @@ def play(plugin, channel_id, showtime=None, srno=None, programId=None, begin=Non
                 "properties": props
             }
         )
-    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-        Script.log(f"[PLAY] Network timeout/connection error: {e}", lvl=Script.ERROR)
-        Script.notify("Connection Timeout", "Network too slow or JioTV blocked. Try without hotspot.")
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+        Script.log("[PLAY] Network timeout/connection error", lvl=Script.ERROR)
+        _show_playback_error("Connection Timeout")
         return False
     except Exception as e:
         if "419" in str(e) or "401" in str(e):
             raise e
-        Script.log(f"[PLAY] Playback error: {e}", lvl=Script.ERROR)
-        Script.notify("Playback Error", str(e)[:100])
+        Script.log("[PLAY] Playback failed while resolving the stream", lvl=Script.ERROR)
+        _show_playback_error()
         return False

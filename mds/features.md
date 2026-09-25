@@ -4,6 +4,23 @@ This document provides in-depth technical details and instructions for the major
 
 ---
 
+## Community fork experience (v1.5.0+)
+
+The home screen is organized for Android TV and D-pad navigation:
+
+* **Favorites** stores stable channel and programme IDs and synchronizes the existing PVR favourites list.
+* **Recently Watched** stores only reopenable, non-sensitive metadata. Use **Clear Recently Watched** in Settings to remove it.
+* **Search** searches cached channel names/IDs and EPG programme metadata already seen by the TV Guide.
+* **TV Guide** fetches one channel/day at a time with a 30-minute cache. Current, upcoming, and supported catch-up actions are shown without requiring a custom skin.
+
+Playback quality is configured under **Settings > Playback**. `Auto` delegates
+representation selection to InputStream Adaptive; fixed resolutions are
+preferences and are only used when the stream exposes a suitable representation.
+The add-on does not bypass authentication, DRM, licences, or subscription
+controls.
+
+---
+
 ## 🛡️ Favourite & Account Management (v1.1.5+)
 
 The addon features a highly resilient backup system to manage your account and curated channels:

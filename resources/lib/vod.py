@@ -29,7 +29,8 @@ def get_download_vod_callback():
 @Route.register
 def show_featured(plugin, id=None):
     play = get_play_callback()
-    for each in getFeatured():
+    featured = getFeatured() or []
+    for each in featured:
         if id:
             if int(each.get("id", 0)) == int(id):
                 data = each.get("data", [])
@@ -38,8 +39,7 @@ def show_featured(plugin, id=None):
                         "art": {
                             "thumb": IMG_CATCHUP_SHOWS + child.get("episodePoster", ""),
                             "icon": IMG_CATCHUP_SHOWS + child.get("episodePoster", ""),
-                            "fanart": IMG_CATCHUP_SHOWS
-                            + child.get("episodePoster", ""),
+                            "fanart": IMG_CATCHUP_SHOWS + child.get("episodePoster", ""),
                             "clearart": IMG_CATCHUP + child.get("logoUrl", ""),
                             "clearlogo": IMG_CATCHUP + child.get("logoUrl", ""),
                         },
@@ -129,7 +129,13 @@ def show_vod(plugin, category=None):
     vod_content = getVODContent()
     vod_channels = getVODChannels()
     dictionary = getCachedDictionary()
-    LANG_MAP = dictionary.get("languageIdMapping")
+    if not dictionary:
+        yield Listitem.from_dict(**{
+            "label": "Error: channel dictionary is unavailable. Please try again.",
+            "callback": "",
+        })
+        return
+    LANG_MAP = dictionary.get("languageIdMapping") or {}
     
     if not vod_content and not vod_channels:
         yield Listitem.from_dict(
@@ -188,7 +194,7 @@ def show_vod(plugin, category=None):
     if vod_content:
         categories = {}
         for item in vod_content:
-            cat = item.get("category", "General")
+            cat = item.get("_vodCategory") or item.get("category", "General")
             if cat not in categories:
                 categories[cat] = []
             categories[cat].append(item)
@@ -303,7 +309,13 @@ def show_vod_category(plugin, category):
 def show_vod_channels_by_language(plugin, language):
     vod_channels = getVODChannels()
     dictionary = getCachedDictionary()
-    LANG_MAP = dictionary.get("languageIdMapping")
+    if not dictionary:
+        yield Listitem.from_dict(**{
+            "label": "Error: channel dictionary is unavailable. Please try again.",
+            "callback": "",
+        })
+        return
+    LANG_MAP = dictionary.get("languageIdMapping") or {}
     
     for channel in vod_channels:
         lang_id = str(channel.get("channelLanguageId", ""))
@@ -347,6 +359,10 @@ def show_vod_channel_content(plugin, channel_id, offset_days=None, languageId=No
     play = get_play_callback()
     download_vod = get_download_vod_callback()
     if offset_days is not None:
+        try:
+            offset_days = int(offset_days)
+        except (TypeError, ValueError):
+            offset_days = 0
         vod_content = getChannelVODContent(channel_id, offset_days)
         
         if not vod_content:
@@ -368,6 +384,7 @@ def show_vod_channel_content(plugin, channel_id, offset_days=None, languageId=No
             if not start_epoch or not end_epoch or start_epoch <= 0 or end_epoch <= 0:
                 continue
             
+            start_time = None
             try:
                 start_time = datetime.fromtimestamp(int(start_epoch) // 1000)
                 end_time = datetime.fromtimestamp(int(end_epoch) // 1000)
@@ -375,17 +392,19 @@ def show_vod_channel_content(plugin, channel_id, offset_days=None, languageId=No
                 timetext = f"[{start_time.strftime('%I:%M %p')}] "
             except (ValueError, OSError):
                 timetext = ""
-            
-            current_time = datetime.now()
-            time_diff = current_time - start_time
-            
-            if time_diff.days == 0:
-                if time_diff.seconds < 3600:
-                    time_ago = f"{time_diff.seconds // 60}m ago"
-                else:
-                    time_ago = f"{time_diff.seconds // 3600}h ago"
+
+            if start_time is None:
+                time_ago = "unknown"
             else:
-                time_ago = f"{time_diff.days}d ago"
+                current_time = datetime.now()
+                time_diff = current_time - start_time
+                if time_diff.days == 0:
+                    if time_diff.seconds < 3600:
+                        time_ago = f"{time_diff.seconds // 60}m ago"
+                    else:
+                        time_ago = f"{time_diff.seconds // 3600}h ago"
+                else:
+                    time_ago = f"{time_diff.days}d ago"
             
             showname = item.get('showname', '')
             if timetext:
@@ -416,7 +435,7 @@ def show_vod_channel_content(plugin, channel_id, offset_days=None, languageId=No
                     "tag": item.get("keywords", ""),
                     "mediatype": "episode",
                     "year": int(item.get("year", 0)) if item.get("year") and item.get("year").isdigit() else 0,
-                    "date": start_time.strftime("%d.%m.%Y"),
+                    "date": start_time.strftime("%d.%m.%Y") if start_time else "",
                     "sorttitle": str(start_epoch),
                 },
                 "label": label,
@@ -449,6 +468,21 @@ def show_vod_channel_content(plugin, channel_id, offset_days=None, languageId=No
             action_fast = f"RunPlugin(plugin://plugin.kodi.jiotv/resources/lib/main/download_vod_fast/?{urlencode(params)})"
             action_superfast = f"RunPlugin(plugin://plugin.kodi.jiotv/resources/lib/main/download_vod_superfast/?{urlencode(params)})"
             
+            favorite_params = dict(params)
+            favorite_params.update({
+                "channel_name": "Channel {0}".format(channel_id),
+                "logo": IMG_CATCHUP,
+                "program_name": showname,
+            })
+            favorite_action = "RunPlugin(plugin://plugin.kodi.jiotv/resources/lib/favorites/toggle_program_favorite/?{0})".format(
+                urlencode(favorite_params)
+            )
+            from resources.lib.favorites import is_favorite
+            favorite_key = "program:{0}:{1}:{2}".format(
+                channel_id, params["programId"], params["begin"]
+            )
+            favorite_label = "Remove from Favorites" if is_favorite(favorite_key) else "Add to Favorites"
+            vod_item.context.append((favorite_label, favorite_action))
             vod_item.context.append(("Download VOD", action))
             vod_item.context.append(("Download VOD (Fast)", action_fast))
             vod_item.context.append(("Download VOD (Super Fast)", action_superfast))
@@ -474,6 +508,6 @@ def show_vod_channel_content(plugin, channel_id, offset_days=None, languageId=No
                         "plot": description,
                     },
                     "callback": Route.ref("/resources/lib/vod:show_vod_channel_content"),
-                    "params": {"channel_id": channel_id, "offset_days": days_ago},
+                    "params": {"channel_id": channel_id, "offset_days": days_ago, "languageId": languageId},
                 }
             )

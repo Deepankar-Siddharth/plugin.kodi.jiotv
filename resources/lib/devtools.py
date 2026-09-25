@@ -11,6 +11,7 @@ import json
 import time
 import socket
 import cgi
+import secrets
 import threading
 from http.server import BaseHTTPRequestHandler
 from socketserver import ThreadingTCPServer
@@ -328,7 +329,24 @@ navigateTo('');
 class DevToolsHandler(BaseHTTPRequestHandler):
     """Handles file browsing, upload, download, and live log streaming."""
 
+    def _is_authorized(self):
+        if not _DEV_AUTH_TOKEN:
+            return False
+        parsed = urlparse(self.path)
+        query_token = parse_qs(parsed.query).get("token", [None])[0]
+        cookie_token = self.headers.get("Cookie", "")
+        for item in cookie_token.split(";"):
+            if "=" in item:
+                name, value = item.split("=", 1)
+                if name.strip() == "jiotv_dev_token":
+                    query_token = query_token or value.strip()
+                    break
+        return bool(query_token) and secrets.compare_digest(str(query_token), str(_DEV_AUTH_TOKEN))
+
     def do_GET(self):
+        if not self._is_authorized():
+            self.send_error(403, "Development token required")
+            return
         parsed = urlparse(self.path)
         path = parsed.path
         params = parse_qs(parsed.query)
@@ -345,6 +363,9 @@ class DevToolsHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
+        if not self._is_authorized():
+            self.send_error(403, "Development token required")
+            return
         if self.path == '/api/upload':
             self._api_upload()
         else:
@@ -356,6 +377,11 @@ class DevToolsHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.send_header('Content-Length', str(len(html)))
+        if _DEV_AUTH_TOKEN:
+            self.send_header(
+                'Set-Cookie',
+                'jiotv_dev_token={0}; HttpOnly; SameSite=Strict'.format(_DEV_AUTH_TOKEN),
+            )
         self.end_headers()
         self.wfile.write(html)
 
@@ -594,16 +620,18 @@ class DevToolsHandler(BaseHTTPRequestHandler):
 _dev_server = None
 _dev_thread = None
 _dev_port = None
+_DEV_AUTH_TOKEN = None
 
 
 def start_server():
-    """Start the dev tools server. Returns (ip, port) tuple or None."""
-    global _dev_server, _dev_thread, _dev_port
+    """Start the token-protected dev tools server."""
+    global _dev_server, _dev_thread, _dev_port, _DEV_AUTH_TOKEN
 
     if _dev_server:
         stop_server()
 
     port = find_port()
+    _DEV_AUTH_TOKEN = secrets.token_urlsafe(24)
     try:
         _dev_server = ThreadingTCPServer(("", port), DevToolsHandler)
         _dev_server.daemon_threads = True
@@ -613,17 +641,18 @@ def start_server():
         _dev_port = port
 
         ip = get_local_ip()
-        xbmc.log(f"[JioTV-DevTools] Server started at http://{ip}:{port}/", xbmc.LOGINFO)
-        return ip, port
+        xbmc.log(f"[JioTV-DevTools] Server started on port {port}", xbmc.LOGINFO)
+        return ip, port, _DEV_AUTH_TOKEN
     except Exception as e:
         xbmc.log(f"[JioTV-DevTools] Failed to start server: {e}", xbmc.LOGERROR)
         _dev_server = None
+        _DEV_AUTH_TOKEN = None
         return None
 
 
 def stop_server():
     """Stop the dev tools server."""
-    global _dev_server, _dev_thread, _dev_port
+    global _dev_server, _dev_thread, _dev_port, _DEV_AUTH_TOKEN
 
     if _dev_server:
         try:
@@ -634,6 +663,7 @@ def stop_server():
         _dev_server = None
         _dev_thread = None
         _dev_port = None
+        _DEV_AUTH_TOKEN = None
         xbmc.log("[JioTV-DevTools] Server stopped", xbmc.LOGINFO)
         return True
     return False
@@ -643,7 +673,12 @@ def is_running():
     return _dev_server is not None
 
 
-def get_url():
+def get_url(include_token=False):
     if _dev_server and _dev_port:
-        return f"http://{get_local_ip()}:{_dev_port}/"
+        suffix = "?token={0}".format(_DEV_AUTH_TOKEN) if include_token and _DEV_AUTH_TOKEN else ""
+        return f"http://{get_local_ip()}:{_dev_port}/{suffix}"
     return None
+
+
+def get_access_url():
+    return get_url(include_token=True)

@@ -1,16 +1,9 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 
-import urlquick
-from datetime import datetime, timedelta, date
-from time import time
 from codequick import Route, Listitem, Script
 from codequick.script import Settings
-from resources.lib.constants import (
-    IMG_CATCHUP,
-    IMG_CATCHUP_SHOWS,
-    CATCHUP_SRC,
-)
+from resources.lib.constants import IMG_CATCHUP
 from resources.lib.utils import (
     getCachedChannels,
     getCachedDictionary,
@@ -31,21 +24,50 @@ def get_record_live_stream_callback():
 def root(plugin):
     from xbmcaddon import Addon
     addon = Addon()
+    if addon.getSetting("quality_schema_version") in ("", "0"):
+        legacy_quality = addon.getSetting("quality") or "Manual"
+        legacy_map = {
+            "Best": "Best Available",
+            "High": "720p",
+            "Medium+": "720p",
+            "Medium": "480p",
+            "Low": "360p",
+            "Lower": "360p",
+            "Lowest": "360p",
+            "Ask-me": "Manual",
+            "Manual": "Manual" if addon.getSetting("migrated_quality") == "true" else "Auto",
+        }
+        addon.setSetting(
+            "playback_quality",
+            legacy_map.get(legacy_quality, "Auto"),
+        )
+        addon.setSetting("quality_schema_version", "1")
     if addon.getSetting("migrated_quality") != "true":
         addon.setSetting("quality", "Manual")
         addon.setSetting("migrated_quality", "true")
         
-    yield Listitem.from_dict(
-        **{
-            "label": "Video on Demand",
+    # Keep the home screen short and remote-friendly.  These routes are
+    # presentation layers over the existing channel/EPG/VOD architecture.
+    for label, route in [
+        ("Live TV", "/resources/lib/menu:show_live_tv"),
+        ("Favorites", "/resources/lib/favorites:show_favorites"),
+        ("Recently Watched", "/resources/lib/recent:show_recent"),
+        ("TV Guide", "/resources/lib/guide:show_guide"),
+        ("Search", "/resources/lib/search:show_search"),
+        ("Catch-Up", "/resources/lib/vod:show_vod"),
+        ("VOD", "/resources/lib/vod:show_featured"),
+        ("Settings", "/resources/lib/main:show_settings"),
+    ]:
+        yield Listitem.from_dict(**{
+            "label": label,
             "art": {
-                "thumb": IMG_CATCHUP_SHOWS + "cms/210528144026.jpg",
-                "icon": IMG_CATCHUP_SHOWS + "cms/210528144026.jpg",
-                "fanart": IMG_CATCHUP_SHOWS + "cms/210528144026.jpg",
+                "thumb": addon.getAddonInfo("icon"),
+                "icon": addon.getAddonInfo("icon"),
+                "fanart": addon.getAddonInfo("fanart"),
             },
-            "callback": Route.ref("/resources/lib/vod:show_vod"),
-        }
-    )
+            "callback": Route.ref(route),
+        })
+
     for e in ["Genres", "Languages"]:
         yield Listitem.from_dict(
             **{
@@ -121,6 +143,13 @@ def show_listby(plugin, by):
         )
 
 
+@Route.register
+def show_live_tv(plugin):
+    """Show all cached channels without duplicating the existing category UI."""
+    for item in show_category(plugin, "All", "All"):
+        yield item
+
+
 def is_lang_allowed(langId, langMap):
     if langId in langMap.keys():
         try:
@@ -162,7 +191,6 @@ def isPlayAbleGenre(each, GENRE_MAP):
 @Route.register
 def show_category(plugin, categoryOrLang, by):
     play = get_play_callback()
-    record_live_stream = get_record_live_stream_callback()
     resp = getCachedChannels()
     if not resp:
         yield Listitem.from_dict(
@@ -193,6 +221,11 @@ def show_category(plugin, categoryOrLang, by):
                 return False
 
             fby = by.lower()[:-1] if by.endswith("s") else by.lower()
+            if fby == "all":
+                return (
+                    is_lang_allowed(str(x.get("channelLanguageId", "")), LANG_MAP)
+                    and is_genre_allowed(str(x.get("channelCategoryId", "")), GENRE_MAP)
+                )
             if fby == "genre":
                 # Browsing by genre: match genre AND apply language filter
                 genre_id = str(x.get("channelCategoryId", ""))
@@ -211,12 +244,14 @@ def show_category(plugin, categoryOrLang, by):
             return False
     try:
         flist = list(filter(fltr, resp))
+        from resources.lib.favorites import get_favorite_ids
+        favorite_ids = set(get_favorite_ids())
         if len(flist) < 1:
             yield Listitem.from_dict(
                 **{
                     "label": "No Results Found, Go Back",
-                    "callback": show_listby,
-                    "params": {"by": by},
+                    "callback": show_live_tv if by.lower() == "all" else show_listby,
+                    "params": {} if by.lower() == "all" else {"by": by},
                 }
             )
         else:
@@ -246,7 +281,8 @@ def show_category(plugin, categoryOrLang, by):
                         }
                     )
                     
-                    if each.get("isCatchupAvailable"):
+                    from resources.lib.guide import _as_bool
+                    if _as_bool(each.get("isCatchupAvailable")) or _as_bool(each.get("stbCatchupAvailable")):
                         # Proper CodeQuick context menu for Catchup and Recording
                         from urllib.parse import urlencode
                         
@@ -263,6 +299,18 @@ def show_category(plugin, categoryOrLang, by):
                         
                         litm.context.append(("Catchup", catchup_action))
                         litm.context.append(("Record Live Stream", record_action))
+
+                    channel_key = str(each.get("channel_id", ""))
+                    if channel_key in favorite_ids:
+                        favorite_label = "Remove from Favorites"
+                    else:
+                        favorite_label = "Add to Favorites"
+                    litm.context.append((
+                        favorite_label,
+                        "RunPlugin(plugin://plugin.kodi.jiotv/resources/lib/favorites/toggle_favorite/?channel_id={0}&languageId={1})".format(
+                            channel_key, each.get("channelLanguageId", "")
+                        ),
+                    ))
                     yield litm
                 except Exception as loop_e:
                     Script.log(f"Error processing channel {each.get('channel_name')}: {loop_e}", lvl=Script.WARNING)
@@ -274,77 +322,16 @@ def show_category(plugin, categoryOrLang, by):
 
 @Route.register
 def show_epg(plugin, day, channel_id, languageId=None):
-    play = get_play_callback()
-    resp = urlquick.get(
-        CATCHUP_SRC.format(day, channel_id), max_age=1800, timeout=15
-    ).json()
-    epg = sorted(resp["epg"], key=lambda show: show["startEpoch"], reverse=False)
-    livetext = "[COLOR red] [ LIVE ] [/COLOR]"
-    for each in epg:
-        current_epoch = int(time() * 1000)
-        if not each["stbCatchupAvailable"] or each["startEpoch"] > current_epoch:
-            continue
-        islive = each["startEpoch"] < current_epoch and each["endEpoch"] > current_epoch
-        start_time = datetime.fromtimestamp(int(each["startEpoch"] * 0.001))
-        end_time = datetime.fromtimestamp(int(each["endEpoch"] * 0.001))
-        showtime = (
-            "[COLOR red][LIVE][/COLOR] "
-            if islive
-            else f"[{start_time.strftime('%I:%M %p')}] "
-        )
-        label = each["showname"] + " " + showtime
-        yield Listitem.from_dict(
-            **{
-                "label": label,
-                "art": {
-                    "thumb": IMG_CATCHUP_SHOWS + each["episodePoster"],
-                    "icon": IMG_CATCHUP_SHOWS + each["episodePoster"],
-                    "fanart": IMG_CATCHUP_SHOWS + each["episodePoster"],
-                },
-                "callback": play,
-                "info": {
-                    "title": label,
-                    "originaltitle": each["showname"],
-                    "tvshowtitle": each["showname"],
-                    "genre": each["showGenre"],
-                    "plot": each["description"],
-                    "episodeguide": each.get("episode_desc"),
-                    "episode": 0 if each["episode_num"] == -1 else each["episode_num"],
-                    "cast": each["starCast"].split(", "),
-                    "director": each["director"],
-                    "duration": each["duration"] * 60,
-                    "tag": each["keywords"],
-                    "mediatype": "episode",
-                },
-                "params": {
-                    "channel_id": each.get("channel_id"),
-                    "showtime": datetime.fromtimestamp(int(each.get("startEpoch", 0) * 0.001)).strftime("%H%M%S"),
-                    "srno": datetime.fromtimestamp(int(each.get("startEpoch", 0) * 0.001)).strftime("%Y%m%d"),
-                    "programId": each.get("showId") if each.get("showId") else f"CHN-{each.get('channel_id')}-PRG-{datetime.fromtimestamp(int(each.get('startEpoch', 0) * 0.001)).strftime('%Y%m%d%H%M')}",
-                    "begin": datetime.utcfromtimestamp(
-                        int(each.get("startEpoch", 0) * 0.001)
-                    ).strftime("%Y%m%dT%H%M%S"),
-                    "end": datetime.utcfromtimestamp(
-                        int(each.get("endEpoch", 0) * 0.001)
-                    ).strftime("%Y%m%dT%H%M%S"),
-                    "languageId": languageId
-                },
-            }
-        )
-    if int(day) == 0:
-        for i in range(-1, -7, -1):
-            label = (
-                "Yesterday"
-                if i == -1
-                else (date.today() + timedelta(days=i)).strftime("%A %d %B")
-            )
-            yield Listitem.from_dict(
-                **{
-                    "label": label,
-                    "callback": Route.ref("/resources/lib/menu:show_epg"),
-                    "params": {"day": i, "channel_id": channel_id, "languageId": languageId},
-                }
-            )
+    """Compatibility route: use the cached, TV-friendly guide presentation."""
+    from resources.lib.guide import show_guide_channel
+
+    for item in show_guide_channel(
+        plugin,
+        channel_id=channel_id,
+        languageId=languageId,
+        day=day,
+    ):
+        yield item
 
 
 @Route.register

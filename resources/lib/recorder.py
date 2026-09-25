@@ -351,7 +351,7 @@ def get_stream_url_for_recording(channel_id, showtime=None, srno=None, programId
             res = urlquick.post(
                 "https://jiotvapi.media.jio.com/playback/apis/v1.1/geturl",
                 data=api_data,
-                verify=False,
+                verify=True,
                 headers=sony_headers,
                 max_age=-1,
             )
@@ -381,7 +381,7 @@ def get_stream_url_for_recording(channel_id, showtime=None, srno=None, programId
                     })
 
                     m3u8Res = urlquick.get(
-                        final_url, headers=m3u8Headers, verify=False, max_age=-1, raise_for_status=True
+                        final_url, headers=m3u8Headers, verify=True, max_age=-1, raise_for_status=True
                     )
 
                     m3u8String = m3u8Res.text
@@ -800,7 +800,7 @@ def hls_segment_download(url, output_path, headers=None, num_threads=16):
                             if not try_headers:
                                 continue
                             Script.log(f"[DOWNLOAD] Trying key: {url_name} + {header_name} -> {try_key_url[:100]}...", lvl=Script.INFO)
-                            key_response = requests.get(try_key_url, headers=try_headers, timeout=10, verify=False)
+                            key_response = requests.get(try_key_url, headers=try_headers, timeout=10, verify=True)
                             key_response.raise_for_status()
                             if len(key_response.content) == 16:  # AES-128 key is exactly 16 bytes
                                 key_filename = f"key_{len(key_files)}.key"
@@ -1224,7 +1224,7 @@ def get_widevine_license_info(channel_id, showtime=None, srno=None, programId=No
             "content-type": "application/dash+xml",
         })
         
-        mpd_res = urlquick.get(stream_url, headers=mpd_headers, verify=False, max_age=-1)
+        mpd_res = urlquick.get(stream_url, headers=mpd_headers, verify=True, max_age=-1)
         mpd_content = mpd_res.text
         
         # Extract content_id from MPD or use programId
@@ -1330,7 +1330,7 @@ def _prompt_audio_selection(channel_id, showtime, srno, programId, begin, end):
         
         req_headers = {k: v for k, v in headers.items() if v and isinstance(v, str)}
         Script.log(f"[_prompt_audio_selection] Fetching M3U8: {stream_url}", lvl=Script.INFO)
-        res = requests.get(stream_url, headers=req_headers, verify=False, timeout=15)
+        res = requests.get(stream_url, headers=req_headers, verify=True, timeout=15)
         res.raise_for_status()
         
         playlist = m3u8.loads(res.text)

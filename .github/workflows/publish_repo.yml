@@ -5,157 +5,219 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
+concurrency:
+  group: kodi-pages-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    env:
+      ADDON_ID: plugin.kodi.jiotv
+      SOURCE_REPOSITORY_ID: repository.jiotvdirect
+      PAGES_OWNER: deepankar-siddharth
     steps:
-      - name: Checkout addon code
-        uses: actions/checkout@v3
+      - name: Checkout tagged source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           path: addon
 
-      - name: Set up Repository Structure
+      - name: Validate tag and source manifests
+        id: release
+        shell: bash
         run: |
-          mkdir -p repo/plugin.kodi.jiotv
-          mkdir -p repo/repository.jiotvdirect
-          
-          # Use the git tag as the source of truth for the version (v1.1.0 -> 1.1.0)
-          VERSION=${GITHUB_REF_NAME#v}
-          ADDON_ID="plugin.kodi.jiotv"
-          REPO_ID="repository.jiotvdirect"
-          
-          # Determine repo URL based on version tag (v1.3.7_beta -> https://dineshintry.github.io/plugin.kodi.jiotv/beta/)
-          if [[ "$VERSION" == *"beta"* ]]; then
-              REPO_URL="https://dineshintry.github.io/plugin.kodi.jiotv/beta/"
-          else
-              REPO_URL="https://dineshintry.github.io/plugin.kodi.jiotv/"
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "[FAIL] Tag is not a supported semantic version: $TAG" >&2
+            exit 1
           fi
-          
-          # 1. Package the main Addon
-          mkdir -p temp/$ADDON_ID
-          cp -r addon/* temp/$ADDON_ID/
-          cd temp
-          zip -r ../repo/$ADDON_ID/$ADDON_ID-$VERSION.zip $ADDON_ID -x "*.git*" ".github*" "kodi.log" "mds/*" "test_scripts/*" "repository.jiotvdirect/*"
-          cd ..
-          
-          # 2. Package the Repository Addon
-          if [[ "$VERSION" == *"beta"* ]]; then
-              REPO_ID="repository.jiotvdirect.beta"
-              mkdir -p temp_repo/$REPO_ID
-              cp -r addon/repository.jiotvdirect/* temp_repo/$REPO_ID/
-              
-              # Modify addon.xml for Beta repository
-              sed -i 's/id="repository.jiotvdirect" name="JioTV Direct Repository"/id="repository.jiotvdirect.beta" name="JioTV Direct Repository (Beta)"/g' temp_repo/$REPO_ID/addon.xml
-              sed -i 's|https://dineshintry.github.io/plugin.kodi.jiotv/|https://dineshintry.github.io/plugin.kodi.jiotv/beta/|g' temp_repo/$REPO_ID/addon.xml
+          if [[ "$VERSION" == *-beta* ]]; then
+            CHANNEL=beta
+            REPOSITORY_ID="${SOURCE_REPOSITORY_ID}.beta"
+            PAGES_PATH="beta"
           else
-              mkdir -p temp_repo/$REPO_ID
-              cp -r addon/repository.jiotvdirect/* temp_repo/$REPO_ID/
+            CHANNEL=stable
+            REPOSITORY_ID="${SOURCE_REPOSITORY_ID}"
+            PAGES_PATH=""
           fi
-          
-          mkdir -p repo/$REPO_ID
-          cd temp_repo
-          zip -r ../repo/$REPO_ID/$REPO_ID-1.0.0.zip $REPO_ID
-          cd ..
-          
-          # 2.5 Asset preparation for remote repo listing
-          # Kodi expects icons at $REPO_URL/$ADDON_ID/resources/icon.png or $REPO_URL/$ADDON_ID/icon.png
-          mkdir -p repo/$ADDON_ID/resources
-          cp addon/resources/icon.png repo/$ADDON_ID/resources/icon.png || true
-          cp addon/resources/fanart.png repo/$ADDON_ID/resources/fanart.png || true
-          cp addon/resources/icon.png repo/$ADDON_ID/icon.png || true
-          cp addon/resources/fanart.png repo/$ADDON_ID/fanart.png || true
-          
-          mkdir -p repo/$REPO_ID/resources
-          cp temp_repo/$REPO_ID/icon.png repo/$REPO_ID/resources/icon.png || true
-          cp temp_repo/$REPO_ID/fanart.png repo/$REPO_ID/resources/fanart.png || true
-          cp temp_repo/$REPO_ID/icon.png repo/$REPO_ID/icon.png || true
-          cp repo/$REPO_ID/$REPO_ID-1.0.0.zip repo/
-          
-          # 3. Generate combined addons.xml and md5
-          python3 addon/scripts/generate_repo.py $REPO_ID
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "repository_id=$REPOSITORY_ID" >> "$GITHUB_OUTPUT"
+          echo "pages_path=$PAGES_PATH" >> "$GITHUB_OUTPUT"
+          python3 addon/scripts/validate_release.py \
+            --tag "$TAG" \
+            --version "$VERSION" \
+            --source-root addon \
+            --source-repository-id "$SOURCE_REPOSITORY_ID" \
+            --source-only
 
-          # Verification: List repo content
-          ls -R repo/
+      - name: Prepare release trees
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          REPOSITORY_ID: ${{ steps.release.outputs.repository_id }}
+          PAGES_PATH: ${{ steps.release.outputs.pages_path }}
+        run: |
+          set -euo pipefail
+          rm -rf temp temp_repo repo
+          mkdir -p "temp/${ADDON_ID}" "temp_repo/${REPOSITORY_ID}" "repo/${ADDON_ID}" "repo/${REPOSITORY_ID}"
 
-          # 4. Generate landing page
-          cat <<EOF > repo/index.html
-          <!DOCTYPE html>
-          <html>
-          <head>
-              <title>JioTV Direct Kodi Repository</title>
-              <meta name="viewport" content="width=device-width, initial-scale=1">
-              <style>
-                  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 40px 20px; background: #f4f7f6; }
-                  .card { background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); text-align: center; }
-                  img.logo { width: 120px; height: 120px; border-radius: 20px; margin-bottom: 20px; }
-                  h1 { margin: 0 0 10px; color: #2c3e50; }
-                  .version { color: #7f8c8d; font-size: 0.9em; margin-bottom: 30px; }
-                  .btn { background: #2980b9; color: white !important; padding: 12px 25px; border-radius: 5px; text-decoration: none; font-weight: bold; display: inline-block; margin: 10px; transition: background 0.2s; }
-                  .btn:hover { background: #2471a3; }
-                  .url-box { background: #edf2f7; padding: 15px; border-radius: 8px; font-family: monospace; font-size: 1.1em; margin: 20px 0; border: 1px dashed #cbd5e0; word-break: break-all; }
-                  .instructions { text-align: left; margin-top: 40px; }
-                  h2 { color: #2c3e50; border-bottom: 2px solid #edf2f7; padding-bottom: 10px; }
-                  ol { padding-left: 20px; }
-                  li { margin-bottom: 10px; }
-              </style>
-          </head>
-          <body>
-              <div class="card">
-                  <img src="plugin.kodi.jiotv/icon.png" class="logo" alt="JioTV Direct Icon">
-                  <h1>JioTV Direct</h1>
-                  <div class="version">Latest Release: v$VERSION</div>
-                  <p>Official Repository for JioTV Direct Kodi Addon.</p>
-                  
-                  <div style="margin: 30px 0;">
-                      <a href="$REPO_ID-1.0.0.zip" class="btn">Download Repository ZIP</a>
-                  </div>
+          # Copy visible source and then remove development/build-only material.
+          cp -a addon/. "temp/${ADDON_ID}/"
+          rm -rf \
+            "temp/${ADDON_ID}/.git" \
+            "temp/${ADDON_ID}/.github" \
+            "temp/${ADDON_ID}/.agents" \
+            "temp/${ADDON_ID}/.gitignore" \
+            "temp/${ADDON_ID}/repository.jiotvdirect" \
+            "temp/${ADDON_ID}/scripts" \
+            "temp/${ADDON_ID}/scratch" \
+            "temp/${ADDON_ID}/test_scripts" \
+            "temp/${ADDON_ID}/kodi.log"
+          find "temp/${ADDON_ID}" -type d -name '__pycache__' -prune -exec rm -rf {} +
+          find "temp/${ADDON_ID}" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 
-                  <h2>Kodi Source URL</h2>
-                  <p>Add this URL to your Kodi File Manager:</p>
-                  <div class="url-box">$REPO_URL</div>
-                  
-                  <div class="instructions">
-                      <h2>Installation Steps</h2>
-                      <ol>
-                          <li>In Kodi, go to <strong>Settings</strong> > <strong>File Manager</strong> > <strong>Add Source</strong>.</li>
-                          <li>Enter the URL above and name it <code>JioTV Direct Repo</code>.</li>
-                          <li>Go to <strong>Settings</strong> > <strong>Add-ons</strong> > <strong>Install from zip file</strong>.</li>
-                          <li>Select <code>JioTV Direct Repo</code> and choose <code>$REPO_ID-1.0.0.zip</code>.</li>
-                          <li>Once installed, select <strong>Install from repository</strong> > <strong>JioTV Direct Repository</strong> > <strong>Video add-ons</strong> > <strong>JioTV Direct</strong>.</li>
-                      </ol>
-                  </div>
+          cp -a addon/repository.jiotvdirect/. "temp_repo/${REPOSITORY_ID}/"
+          cp addon/LICENSE "temp_repo/${REPOSITORY_ID}/LICENSE"
 
-                  <!-- Kodi Scraper Compatibility List -->
-                  <div style="text-align: left; margin-top: 50px; border-top: 1px solid #edf2f7; padding-top: 20px;">
-                      <h3 style="font-size: 0.9em; color: #7f8c8d;">Repository Files:</h3>
-                      <ul style="list-style: none; padding: 0; font-family: monospace; font-size: 0.85em;">
-                          <li><a href="$REPO_ID-1.0.0.zip">$REPO_ID-1.0.0.zip</a></li>
-                          <li><a href="addons.xml">addons.xml</a></li>
-                          <li><a href="addons.xml.md5">addons.xml.md5</a></li>
-                      </ul>
-                  </div>
-              </div>
-          </body>
-          </html>
-          EOF
+          if [[ "$PAGES_PATH" == "beta" ]]; then
+            sed -i \
+              -e 's|id="repository.jiotvdirect"|id="repository.jiotvdirect.beta"|' \
+              -e 's|name="JioTV Direct Repository (Community Fork)"|name="JioTV Direct Repository (Community Beta)"|' \
+              -e 's|https://deepankar-siddharth.github.io/plugin.kodi.jiotv/|https://deepankar-siddharth.github.io/plugin.kodi.jiotv/beta/|g' \
+              "temp_repo/${REPOSITORY_ID}/addon.xml"
+            sed -i \
+              's|https://deepankar-siddharth.github.io/plugin.kodi.jiotv/|https://deepankar-siddharth.github.io/plugin.kodi.jiotv/beta/|g' \
+              "temp/${ADDON_ID}/addon.xml"
+          fi
 
-      - name: Deploy to GitHub Pages
-        if: "!contains(github.ref_name, 'beta')"
-        uses: peaceiris/actions-gh-pages@v3
+          python3 - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          for path in ("temp/plugin.kodi.jiotv/addon.xml", os.path.join("temp_repo", os.environ["REPOSITORY_ID"], "addon.xml")):
+              ET.parse(path)
+          print("[PASS] Temporary manifests are valid XML")
+          PY
+
+      - name: Build and generate repository metadata
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          REPOSITORY_ID: ${{ steps.release.outputs.repository_id }}
+        run: |
+          set -euo pipefail
+          (cd temp && zip -q -r "../repo/${ADDON_ID}/${ADDON_ID}-${VERSION}.zip" "${ADDON_ID}")
+          (cd temp_repo && zip -q -r "../repo/${REPOSITORY_ID}/${REPOSITORY_ID}-${VERSION}.zip" "${REPOSITORY_ID}")
+          cp "repo/${REPOSITORY_ID}/${REPOSITORY_ID}-${VERSION}.zip" "repo/${REPOSITORY_ID}-${VERSION}.zip"
+
+          mkdir -p "repo/${ADDON_ID}/resources" "repo/${REPOSITORY_ID}/resources"
+          cp addon/resources/icon.png "repo/${ADDON_ID}/resources/icon.png"
+          cp addon/resources/icon.png "repo/${ADDON_ID}/icon.png"
+          if [[ -f addon/resources/fanart.png ]]; then
+            cp addon/resources/fanart.png "repo/${ADDON_ID}/resources/fanart.png"
+            cp addon/resources/fanart.png "repo/${ADDON_ID}/fanart.png"
+          fi
+          cp "temp_repo/${REPOSITORY_ID}/icon.png" "repo/${REPOSITORY_ID}/resources/icon.png"
+          cp "temp_repo/${REPOSITORY_ID}/fanart.png" "repo/${REPOSITORY_ID}/resources/fanart.png"
+          cp "temp_repo/${REPOSITORY_ID}/icon.png" "repo/${REPOSITORY_ID}/icon.png"
+          cp "temp_repo/${REPOSITORY_ID}/fanart.png" "repo/${REPOSITORY_ID}/fanart.png"
+
+          python3 addon/scripts/generate_repo.py \
+            "$REPOSITORY_ID" \
+            --version "$VERSION" \
+            --output-dir repo
+
+          python3 addon/scripts/validate_release.py \
+            --tag "$GITHUB_REF_NAME" \
+            --version "$VERSION" \
+            --repository-id "$REPOSITORY_ID" \
+            --source-repository-id "$SOURCE_REPOSITORY_ID" \
+            --source-root addon \
+            --output-dir repo \
+            --addon-zip "repo/${ADDON_ID}/${ADDON_ID}-${VERSION}.zip" \
+            --repository-zip "repo/${REPOSITORY_ID}/${REPOSITORY_ID}-${VERSION}.zip"
+
+      - name: Deploy stable repository
+        if: steps.release.outputs.channel == 'stable'
+        uses: peaceiris/actions-gh-pages@329bcc8f12caed2cefe5a5b80781499a6f3b361b # v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./repo
           publish_branch: gh-pages
           keep_files: true
 
-      - name: Deploy Beta to GitHub Pages
-        if: "contains(github.ref_name, 'beta')"
-        uses: peaceiris/actions-gh-pages@v3
+      - name: Deploy beta repository
+        if: steps.release.outputs.channel == 'beta'
+        uses: peaceiris/actions-gh-pages@329bcc8f12caed2cefe5a5b80781499a6f3b361b # v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./repo
           publish_branch: gh-pages
           destination_dir: beta
           keep_files: true
+
+      - name: Verify published repository
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          CHANNEL: ${{ steps.release.outputs.channel }}
+          REPOSITORY_ID: ${{ steps.release.outputs.repository_id }}
+        run: |
+          set -euo pipefail
+          BASE="https://${PAGES_OWNER}.github.io/plugin.kodi.jiotv"
+          if [[ "$CHANNEL" == "beta" ]]; then
+            BASE="${BASE}/beta"
+          fi
+          required=(
+            "addons.xml"
+            "addons.xml.md5"
+            "plugin.kodi.jiotv/plugin.kodi.jiotv-${VERSION}.zip"
+            "${REPOSITORY_ID}/${REPOSITORY_ID}-${VERSION}.zip"
+          )
+          for attempt in 1 2 3 4 5 6; do
+            ready=true
+            for path in "${required[@]}"; do
+              if ! curl --fail --silent --show-error --retry 2 --retry-delay 2 "${BASE}/${path}" -o /dev/null; then
+                ready=false
+                break
+              fi
+            done
+            if [[ "$ready" == true ]]; then
+              echo "[PASS] Published artifacts verified at ${BASE}"
+              exit 0
+            fi
+            echo "Published files not ready (attempt ${attempt}/6); retrying..."
+            sleep 10
+          done
+          echo "[FAIL] Expected published artifacts were not found under ${BASE}" >&2
+          exit 1
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+          CHANNEL: ${{ steps.release.outputs.channel }}
+          ADDON_ZIP: repo/plugin.kodi.jiotv/plugin.kodi.jiotv-${VERSION}.zip
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ADDON_ZIP" --clobber
+          elif [[ "$CHANNEL" == "beta" ]]; then
+            gh release create "$TAG" "$ADDON_ZIP" \
+              --title "JioTV Direct ${TAG}" \
+              --notes "Community-maintained beta release. Based on dineshintry/plugin.kodi.jiotv." \
+              --prerelease
+          else
+            gh release create "$TAG" "$ADDON_ZIP" \
+              --title "JioTV Direct ${TAG}" \
+              --notes "Community-maintained release. Based on dineshintry/plugin.kodi.jiotv."
+          fi
+          echo "[PASS] GitHub Release is present with the addon ZIP"

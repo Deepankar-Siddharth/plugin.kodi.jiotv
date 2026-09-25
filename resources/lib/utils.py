@@ -25,12 +25,11 @@ import json
 import requests
 import requests.adapters
 import re
-import ssl
 import urllib.request
 from datetime import datetime
 from urllib3.util.retry import Retry
 
-ssl._create_default_https_context = ssl._create_unverified_context
+# Keep certificate verification enabled for all authenticated API/CDN calls.
 
 # ─── Force IPv4 ──────────────────────────────────────────────────────────────
 # On Android TV via mobile hotspot, DNS returns both IPv6 (AAAA) and IPv4 (A)
@@ -69,14 +68,9 @@ _adapter = requests.adapters.HTTPAdapter(
 )
 
 _session = requests.Session()
-_session.verify = False
+_session.verify = True
 _session.mount("https://", _adapter)
 _session.mount("http://", _adapter)
-
-# Suppress InsecureRequestWarning globally
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 
 def get_session():
     """Return the persistent requests.Session with TLS connection reuse.
@@ -143,7 +137,7 @@ def isLoggedIn(func):
                     if refresh_token():
                          return func(*args, **kwargs)
                     
-                    Script.log(f"[AUTH] Server returned {e}. Token likely invalidated.", lvl=Script.INFO)
+                    Script.log("[AUTH] Server rejected the session; token likely invalidated.", lvl=Script.INFO)
                     with PersistentDict("localdb") as db:
                         db["exp"] = 0  # Force expiry locally
                     Script.notify("Session Expired", "Authentication failed. Please login again.")
@@ -194,8 +188,8 @@ def get_jwt_exp(token):
         payload_json = base64.b64decode(payload_b64 + padding).decode("utf-8")
         payload = json.loads(payload_json)
         return payload.get("exp")
-    except Exception as e:
-        Script.log(f"[AUTH] Failed to parse JWT token: {e}", lvl=Script.WARNING)
+    except Exception:
+        Script.log("[AUTH] Unable to parse token expiry", lvl=Script.WARNING)
         return None
 
 
@@ -224,7 +218,7 @@ def refresh_token():
         }
         
         try:
-            resp = urlquick.post(TSREFTOK, json=payload, headers=req_headers, verify=False, raise_for_status=False).json()
+            resp = urlquick.post(TSREFTOK, json=payload, headers=req_headers, verify=True, raise_for_status=False).json()
             if resp.get("authToken"):
                 headers["authtoken"] = resp.get("authToken")
                 headers["refreshtoken"] = resp.get("refreshToken", headers.get("refreshtoken"))
@@ -236,8 +230,8 @@ def refresh_token():
                 
                 Script.log("[AUTH] AuthToken refreshed successfully.", lvl=Script.INFO)
                 return True
-        except Exception as e:
-            Script.log(f"[AUTH] AuthToken refresh failed: {e}", lvl=Script.ERROR)
+        except Exception:
+            Script.log("[AUTH] AuthToken refresh failed", lvl=Script.ERROR)
     return False
 
 
@@ -260,15 +254,15 @@ def refresh_sso_token():
         }
         
         try:
-            resp = urlquick.get(LOTPREF, headers=req_headers, verify=False, raise_for_status=False).json()
+            resp = urlquick.get(LOTPREF, headers=req_headers, verify=True, raise_for_status=False).json()
             if resp.get("ssoToken"):
                 headers["ssotoken"] = resp.get("ssoToken")
                 db["headers"] = headers
                 db["exp"] = time.time() + 864000 # Extend by 10 days
                 Script.log("[AUTH] SSOToken refreshed successfully.", lvl=Script.INFO)
                 return True
-        except Exception as e:
-            Script.log(f"[AUTH] SSOToken refresh failed: {e}", lvl=Script.ERROR)
+        except Exception:
+            Script.log("[AUTH] SSOToken refresh failed", lvl=Script.ERROR)
     return False
 
 
@@ -298,7 +292,7 @@ def login(username, password, mode="unpw"):
                 "appname": "RJIL_JioTV",
             },
             max_age=-1,
-            verify=False,
+            verify=True,
             raise_for_status=False,
         ).json()
     else:
@@ -326,7 +320,7 @@ def login(username, password, mode="unpw"):
                 "Content-Type": "application/json",
             },
             max_age=-1,
-            verify=False,
+            verify=True,
             raise_for_status=False,
         ).json()
     if resp.get("ssoToken", "") != "":
@@ -360,8 +354,7 @@ def login(username, password, mode="unpw"):
         headers.update(_CREDS)
         with PersistentDict("localdb") as db:
             db["headers"] = headers
-            # Log the full response to inspect for server-side expiry hints
-            Script.log(f"[LOGIN] Response: {resp}", lvl=Script.INFO)
+            Script.log("[LOGIN] Authentication response accepted", lvl=Script.INFO)
             
             # Extract expiry from JWT authtoken, fallback to default 10 days for OTP or 5 days for Password
             jwt_exp = get_jwt_exp(resp.get("authToken", ""))
@@ -382,17 +375,16 @@ def login(username, password, mode="unpw"):
         Script.notify("Login Success", "")
         return None
     else:
-        Script.log(resp, lvl=Script.INFO)
-        msg = resp.get("message", "Unknow Error")
-        Script.notify("Login Failed", msg)
-        return msg
+        Script.log("[LOGIN] Authentication response rejected", lvl=Script.INFO)
+        Script.notify("Login Failed", "The service did not accept those credentials.")
+        return "Authentication failed"
 
 
 def sendOTPV2(mobile):
     if "+91" not in mobile:
         mobile = "+91" + mobile
     body = {"number": base64.b64encode(mobile.encode("ascii")).decode("ascii")}
-    Script.log(body, lvl=Script.ERROR)
+    Script.log("[AUTH] OTP request prepared", lvl=Script.DEBUG)
     resp = urlquick.post(
         "https://jiotvapi.media.jio.com/userservice/apis/v1/loginotp/send",
         json=body,
@@ -404,7 +396,7 @@ def sendOTPV2(mobile):
             "appname": "RJIL_JioTV",
         },
         max_age=-1,
-        verify=False,
+        verify=True,
         raise_for_status=False,
     )
     if resp.status_code != 204:
@@ -414,7 +406,15 @@ def sendOTPV2(mobile):
 
 def logout():
     with PersistentDict("localdb") as db:
-        del db["headers"]
+        if db.get("headers") is not None:
+            del db["headers"]
+    # Remove the namespace used by older web-login builds as well.
+    try:
+        with PersistentDict("headers") as db:
+            if db.get("headers") is not None:
+                del db["headers"]
+    except Exception:
+        pass
     Script.notify("You've been logged out", "")
 
 
@@ -499,7 +499,7 @@ def getFeatured():
     try:
         resp = urlquick.get(
             FEATURED_SRC,
-            verify=False,
+            verify=True,
             headers={
                 "usergroup": "tvYR7NSNn7rymo3F",
                 "os": "android",
@@ -607,7 +607,7 @@ def getChannelVODContent(channel_id, offset_days=0):
         
         headers = dict(headers)
         headers["User-Agent"] = "okhttp/4.2.2"
-        resp = urlquick.get(epg_url, headers=headers, verify=False, max_age=1800, timeout=15)
+        resp = urlquick.get(epg_url, headers=headers, verify=True, max_age=1800, timeout=15)
         epg_data = resp.json()
         
         vod_content = []
@@ -1545,7 +1545,7 @@ def show_file_in_textviewer(relative_path):
 
 def portFavouritesToPVR():
     import re
-    import pickle
+    from urllib.parse import unquote
     import xml.etree.ElementTree as ET
     fav_file = xbmcvfs.translatePath("special://userdata/favourites.xml")
     chan_ids = []
@@ -1555,22 +1555,25 @@ def portFavouritesToPVR():
         if not target_str or "plugin.kodi.jiotv" not in target_str.lower():
             return
         cid = None
-        # Check direct channel_id parameter
-        m = re.search(r'channel_id=([0-9a-zA-Z_-]+)', target_str)
+        decoded_target = unquote(str(target_str))
+        # Check direct channel_id parameters first.
+        m = re.search(r'channel_id[=\':\\\s]+([0-9a-zA-Z_-]+)', decoded_target)
         if m:
             cid = str(m.group(1))
-        elif "_pickle_=" in target_str:
+        elif "_pickle_=" in decoded_target:
             try:
-                pickle_hex = target_str.split("_pickle_=")[1]
+                pickle_hex = decoded_target.split("_pickle_=", 1)[1]
                 for delimiter in ['"', "'", "&", ")", " ", "\\"]:
                     if delimiter in pickle_hex:
                         pickle_hex = pickle_hex.split(delimiter)[0]
-                data_bytes = bytes.fromhex(pickle_hex)
-                unpickled = pickle.loads(data_bytes)
-                if isinstance(unpickled, dict) and "channel_id" in unpickled:
-                    cid = str(unpickled["channel_id"])
-            except Exception as e:
-                Script.log(f"[FAV-PORT] Failed to decode _pickle_: {e}", lvl=Script.WARNING)
+                # CodeQuick may encode a legacy favourite target as a pickle.
+                # Decode only its textual channel_id field; never unpickle data.
+                text_value = bytes.fromhex(pickle_hex).decode("utf-8", "ignore")
+                m = re.search(r'channel_id[^0-9A-Za-z_-]*([0-9A-Za-z_-]+)', text_value)
+                if m:
+                    cid = str(m.group(1))
+            except Exception:
+                Script.log("[FAV-PORT] Unable to inspect legacy favourite metadata", lvl=Script.WARNING)
 
         if cid and cid not in seen:
             seen.add(cid)
@@ -1601,10 +1604,14 @@ def portFavouritesToPVR():
         except Exception as xml_err:
             Script.log(f"[FAV-PORT] XML parse failed: {xml_err}", lvl=Script.WARNING)
             
-    # Override existing favourites in localdb preserving exact user order
-    with PersistentDict("localdb") as db:
-        db["pvr_favourites"] = chan_ids
-        
+    # Synchronize the legacy native-favourites port into the canonical
+    # add-on favourite store while preserving the user's exact order.
+    try:
+        from resources.lib.favorites import replace_channel_ids
+        replace_channel_ids(chan_ids)
+    except Exception as fav_error:
+        Script.log(f"[FAV-PORT] Failed to synchronize favourites: {fav_error}", lvl=Script.WARNING)
+
     # Regenerate M3U playlist
     try:
         from resources.lib.pvr import m3ugen

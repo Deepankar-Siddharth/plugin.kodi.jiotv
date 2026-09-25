@@ -50,8 +50,12 @@ def login(plugin):
         )
         for i in range(120):
             sleep(1)
-            with PersistentDict("headers") as db:
+            with PersistentDict("localdb") as db:
                 headers = db.get("headers")
+            if not headers:
+                # Read the legacy namespace once for upgrades from older builds.
+                with PersistentDict("headers") as db:
+                    headers = db.get("headers")
             if headers or pDialog.iscanceled():
                 break
             pDialog.update(i)

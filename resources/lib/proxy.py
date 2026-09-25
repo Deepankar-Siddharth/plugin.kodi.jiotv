@@ -4,7 +4,8 @@ from __future__ import unicode_literals
 # basic imports
 from http.server import SimpleHTTPRequestHandler
 import os
-from urllib.parse import parse_qs, urlparse, unquote
+from urllib.parse import parse_qs, urlparse, urlsplit
+import ipaddress
 from xbmcvfs import translatePath
 import xbmcaddon
 import xml.etree.ElementTree as ET
@@ -16,6 +17,34 @@ from codequick import Script
 ADDON = xbmcaddon.Addon()
 ADDON_PATH = ADDON.getAddonInfo("path")
 PROXY_PORT = 48996
+
+
+def _is_loopback(value):
+    try:
+        return ipaddress.ip_address(str(value)).is_loopback
+    except ValueError:
+        return str(value) in ("localhost", "127.0.0.1", "::1")
+
+
+def _is_public_http_url(value):
+    try:
+        parsed = urlsplit(str(value))
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return False
+        if parsed.username or parsed.password:
+            return False
+        hostname = parsed.hostname.casefold()
+        if hostname in ("localhost", "localhost.localdomain") or hostname.endswith(".local"):
+            return False
+        try:
+            address = ipaddress.ip_address(hostname)
+            if not address.is_global:
+                return False
+        except ValueError:
+            pass
+        return True
+    except Exception:
+        return False
 
 
 def optimize_mpd(mpd_xml_text, cdn_url):
@@ -124,10 +153,13 @@ class JioTVProxy(SimpleHTTPRequestHandler):
             f.close()
             return
         elif path == "/manifest.mpd":
+            if not _is_loopback(self.client_address[0]):
+                self.send_error(403, "Local proxy access only")
+                return
             query = parse_qs(parsed_url.query)
             cdn_url = query.get("url", [None])[0]
-            if not cdn_url:
-                self.send_error(400, "Missing url parameter")
+            if not cdn_url or not _is_public_http_url(cdn_url):
+                self.send_error(400, "Invalid manifest URL")
                 return
             try:
                 headers = {
@@ -147,9 +179,9 @@ class JioTVProxy(SimpleHTTPRequestHandler):
                 try:
                     optimized_xml = optimize_mpd(mpd_text, cdn_url)
                     content_bytes = optimized_xml.encode("utf-8")
-                    Script.log(f"[PROXY] MPD audio optimization successful for {cdn_url}", lvl=Script.INFO)
-                except Exception as opt_err:
-                    Script.log(f"[PROXY] MPD optimization failed, serving raw: {opt_err}", lvl=Script.WARNING)
+                    Script.log("[PROXY] MPD audio optimization successful", lvl=Script.DEBUG)
+                except Exception:
+                    Script.log("[PROXY] MPD optimization failed; serving original manifest", lvl=Script.WARNING)
                     content_bytes = resp.content
 
                 self.send_response(200)
@@ -159,9 +191,9 @@ class JioTVProxy(SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(content_bytes)
                 return
-            except Exception as e:
-                Script.log(f"[PROXY] Failed to proxy MPD {cdn_url}: {e}", lvl=Script.ERROR)
-                self.send_error(500, str(e))
+            except Exception:
+                Script.log("[PROXY] Manifest proxy request failed", lvl=Script.ERROR)
+                self.send_error(500, "Manifest proxy request failed")
                 return
         else:
             self.send_error(404, "File not found")
@@ -173,7 +205,7 @@ class JioTVProxy(SimpleHTTPRequestHandler):
 
             qs = parse_qs(data_string.decode('utf-8'))
             error = None
-            Script.log(qs, lvl=Script.INFO)
+            Script.log("[PROXY] Web login request received", lvl=Script.DEBUG)
             try:
                 if qs.get("type")[0] == "password":
                     error = login(qs.get("username")[0], qs.get("password")[0])
@@ -185,9 +217,9 @@ class JioTVProxy(SimpleHTTPRequestHandler):
                         error = sendOTPV2(mobile)
                 else:
                     error = "Invalid Type"
-            except Exception as e:
-                Script.log(e, lvl=Script.ERROR)
-                error = str(e)
+            except Exception:
+                Script.log("[PROXY] Web login request failed", lvl=Script.ERROR)
+                error = "Login failed"
 
             if error:
                 location = "/?error="+str(error)

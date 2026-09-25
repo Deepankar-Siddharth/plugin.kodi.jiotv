@@ -16,6 +16,9 @@ from resources.lib.player import play as player_play
 from resources.lib.auth import login, logout, setmobile, applyall
 from resources.lib.pvr import m3ugen as pvr_m3ugen, epg_setup, pvrsetup, cleanup
 
+# Import the experience modules so their CodeQuick routes are registered.
+from resources.lib import favorites, recent, search, guide
+
 # Compatibility routes for old M3Us and settings
 from codequick import Route, Resolver, Script
 
@@ -23,6 +26,12 @@ from codequick import Route, Resolver, Script
 def root(*args, **kwargs):
     from resources.lib.menu import root as _root
     return _root(*args, **kwargs)
+
+@Route.register
+def show_settings(*args, **kwargs):
+    from xbmcaddon import Addon
+    Addon().openSettings()
+    return []
 
 @Resolver.register
 def play(*args, **kwargs):
@@ -141,10 +150,10 @@ def start_dev_server(*args, **kwargs):
     # Give service.py a moment to start the server
     import xbmc
     xbmc.sleep(1500)
-    from resources.lib.devtools import get_local_ip
-    port = 48997  # Default port
-    ip = get_local_ip()
-    url = f"http://{ip}:{port}/"
+    from resources.lib import devtools
+    if not devtools.is_running():
+        devtools.start_server()
+    url = devtools.get_access_url() or "http://127.0.0.1:48997/"
     xbmcgui.Dialog().ok(
         "Dev Tools Server",
         f"Server is starting at:\n\n[B]{url}[/B]\n\n"
@@ -210,14 +219,6 @@ def copy_log(*args, **kwargs):
 def viewreadme(*args, **kwargs):
     from resources.lib.utils import viewReadmeDialog
     viewReadmeDialog()
-
-@Script.register
-def toggle_debug(plugin, **kwargs):
-    from codequick.script import Settings
-    from codequick import Script
-    current = Settings.get_boolean("debug_enabled")
-    Settings.set_boolean("debug_enabled", not current)
-    Script.notify("JioTV Debug", "Debug logging " + ("Enabled" if not current else "Disabled"))
 
 @Script.register
 def manual_refresh(plugin, **kwargs):

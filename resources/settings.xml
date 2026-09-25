@@ -12,7 +12,7 @@
 					<default>false</default>
 				</setting>
 				<setting help="" id="quality" label="33001" type="string">
-					<level>0</level>
+					<level>4</level>
 					<default>Manual</default>
 					<constraints>
 						<options>
@@ -55,6 +55,23 @@
 					<level>0</level>
 					<default>false</default>
 					<control type="toggle"></control>
+				</setting>
+				<setting help="33079" id="recent_limit" label="33079" type="integer">
+					<level>0</level>
+					<default>15</default>
+					<control format="integer" type="edit">
+						<heading>33079</heading>
+					</control>
+				</setting>
+				<setting help="" id="clear_recent" label="33078" type="action">
+					<level>0</level>
+					<data>RunPlugin(plugin://plugin.kodi.jiotv/resources/lib/recent/clear_recent_history/)</data>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control format="action" type="button">
+						<close>true</close>
+					</control>
 				</setting>
 				<setting help="" id="channelsrc" label="33005" type="boolean">
 					<level>0</level>
@@ -200,6 +217,54 @@
 					</constraints>
 					<control format="action" type="button">
 						<close>true</close>
+					</control>
+				</setting>
+			</group>
+			<group id="5" label="Playback">
+				<setting help="33080" id="playback_quality" label="33080" type="string">
+					<level>0</level>
+					<default>Auto</default>
+					<constraints>
+						<options>
+							<option>Auto</option>
+							<option>Best Available</option>
+							<option>1080p</option>
+							<option>720p</option>
+							<option>480p</option>
+							<option>360p</option>
+							<option>Manual</option>
+						</options>
+					</constraints>
+					<control format="string" type="list">
+						<heading>33080</heading>
+					</control>
+				</setting>
+				<setting help="33081" id="adaptive_streaming" label="33081" type="boolean">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"></control>
+				</setting>
+				<setting help="33082" id="max_resolution" label="33082" type="string">
+					<level>0</level>
+					<default>Auto</default>
+					<constraints>
+						<options>
+							<option>Auto</option>
+							<option>1080</option>
+							<option>720</option>
+							<option>480</option>
+							<option>360</option>
+						</options>
+					</constraints>
+					<control format="string" type="list">
+						<heading>33082</heading>
+					</control>
+				</setting>
+				<setting help="33083" id="max_bitrate" label="33083" type="integer">
+					<level>0</level>
+					<default>0</default>
+					<control format="integer" type="edit">
+						<heading>33083</heading>
 					</control>
 				</setting>
 			</group>

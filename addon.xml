@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="plugin.kodi.jiotv" name="JioTV Direct" version="1.4.0_beta" provider-name="Community">
+<addon id="plugin.kodi.jiotv" name="JioTV Direct" version="1.5.0" provider-name="Deepankar-Siddharth">
     <requires>
         <import addon="xbmc.python" version="3.0.0" />
         <import addon="script.module.codequick" version="1.0.2" />
@@ -17,18 +17,28 @@
     <extension point="xbmc.service" library="service.py" />
     <extension point="xbmc.addon.repository" name="JioTV Direct Updates">
         <dir>
-            <info compressed="false">https://dineshintry.github.io/plugin.kodi.jiotv/beta/addons.xml</info>
-            <checksum>https://dineshintry.github.io/plugin.kodi.jiotv/beta/addons.xml.md5</checksum>
-            <datadir zip="true">https://dineshintry.github.io/plugin.kodi.jiotv/beta/</datadir>
+            <info compressed="false">https://deepankar-siddharth.github.io/plugin.kodi.jiotv/addons.xml</info>
+            <checksum>https://deepankar-siddharth.github.io/plugin.kodi.jiotv/addons.xml.md5</checksum>
+            <datadir zip="true">https://deepankar-siddharth.github.io/plugin.kodi.jiotv/</datadir>
         </dir>
     </extension>
     <extension point="xbmc.addon.metadata">
         <summary lang="en_GB">Stream Live Indian Channels &amp; VOD Content From JioTV on Kodi</summary>
-        <description lang="en_GB">Enjoy Live TV experience and Video on Demand content in Kodi.</description>
+        <description lang="en_GB">Community-maintained fork based on dineshintry/plugin.kodi.jiotv. Enjoy Live TV and Video on Demand content in Kodi.</description>
         <language>en</language>
         <platform>all</platform>
         <license>MIT</license>
         <news>
+v1.5.0
+- Added: Remote-friendly Favorites and Recently Watched home sections with persistent, non-sensitive history.
+- Added: Cached channel and EPG programme search with favourites priority and Unicode-safe matching.
+- Added: TV Guide presentation with current, upcoming, catch-up states, and programme context actions.
+- Added: Playback Quality, Adaptive Streaming, Maximum Resolution, and Maximum Bitrate settings.
+- Improved: Playback failures now show safe, actionable messages and redacted diagnostics.
+- Fixed: XML escaping in addon metadata and fork-owned distribution URLs.
+- Added: Stable/beta release validation for versions, ZIP contents, metadata, MD5, and Pages publication.
+- Improved: TLS verification, local proxy protections, token-protected developer tools, and authentication cleanup.
+
 v1.4.0_beta
 - Fixed: Resolved duplicate IPTV Simple client instances and non-sequential channel numbering in Kodi PVR.
 - Fixed: Synchronized Kodi UI channel numbers (iChannelNumber) with remote control key inputs (tvg-chno).
@@ -69,7 +79,7 @@ v1.3.1
 v1.3.0
 - Added: Full Extra Channels integration supporting M3U, JSON, and XML playlists with HLS/DASH manifest loading, piped headers, and custom ClearKey DRM.
 - Added: VFS-compliant template export/import system enabling users to export, customize, and reload playlists absolutely.
-- Added: "View Add-on Readme & Guides" scrollable native textviewer inside settings under Developer Tools.
+- Added: "View Add-on Readme &amp; Guides" scrollable native textviewer inside settings under Developer Tools.
 - Added: Segmented documentation (features.md, FAQs.md, best_practices.md) in mds/ with linked index in main README.md.
 - Fixed: Auto-mapping legacy com.clearkey.alpha DRM type to Kodi-standard org.w3.clearkey for custom streams.
 - Fixed: Removed redundant test and example M3U files and cleaned up default template with Red Bull TV and Big Buck Bunny DASH.

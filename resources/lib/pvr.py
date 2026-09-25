@@ -43,13 +43,11 @@ def m3ugen(plugin, notify="yes"):
     GENRE_MAP = dictionary.get("channelCategoryMapping") or {}
     LANG_MAP = dictionary.get("languageIdMapping") or {}
 
-    pvr_fav_list = []
     try:
-        from codequick.storage import PersistentDict
-        with PersistentDict("localdb") as db:
-            pvr_fav_list = [str(x) for x in db.get("pvr_favourites", [])]
+        from resources.lib.favorites import get_favorite_ids
+        pvr_fav_list = [str(x) for x in get_favorite_ids()]
     except Exception:
-        pass
+        pvr_fav_list = []
 
     fav_order_map = {str(cid): idx + 1 for idx, cid in enumerate(pvr_fav_list)}
     num_favs = len(pvr_fav_list)
