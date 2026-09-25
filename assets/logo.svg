@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">JioTV Direct logo</title>
+  <desc id="desc">A television screen with a play symbol.</desc>
+  <defs>
+    <linearGradient id="screen" x1="24" y1="24" x2="232" y2="232" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7c3aed"/>
+      <stop offset="0.52" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#06b6d4"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="64" y1="56" x2="194" y2="196" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff" stop-opacity=".28"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="20" y="28" width="216" height="156" rx="28" fill="#0f172a"/>
+  <rect x="32" y="40" width="192" height="132" rx="20" fill="url(#screen)"/>
+  <path d="M32 148c37-30 78-42 125-36 24 3 45 11 67 23v17c0 11-9 20-20 20H52c-11 0-20-9-20-20v-4Z" fill="url(#glow)"/>
+  <path d="m108 79 48 27-48 27V79Z" fill="#fff"/>
+  <path d="M82 204h92" stroke="#cbd5e1" stroke-width="12" stroke-linecap="round"/>
+  <path d="M128 184v20" stroke="#cbd5e1" stroke-width="12" stroke-linecap="round"/>
+  <circle cx="202" cy="58" r="8" fill="#67e8f9"/>
+</svg>
